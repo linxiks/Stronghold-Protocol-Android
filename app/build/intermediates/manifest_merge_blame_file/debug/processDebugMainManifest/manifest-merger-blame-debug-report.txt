@@ -1,0 +1,44 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.stronghold.android"
+4    android:versionCode="1"
+5    android:versionName="0.1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="36" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:4:5-67
+11-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:4:22-64
+12
+13    <application
+13-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:6:5-21:19
+14        android:debuggable="true"
+15        android:extractNativeLibs="false"
+16        android:label="Stronghold"
+16-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:8:9-35
+17        android:theme="@style/AppTheme" >
+17-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:7:9-40
+18        <activity
+18-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:10:9-20:20
+19            android:name="com.stronghold.android.MainActivity"
+19-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:11:13-41
+20            android:exported="true"
+20-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:13:13-36
+21            android:screenOrientation="landscape" >
+21-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:12:13-50
+22            <intent-filter>
+22-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:15:13-18:29
+23                <action android:name="android.intent.action.MAIN" />
+23-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:16:17-69
+23-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:16:25-66
+24
+25                <category android:name="android.intent.category.LAUNCHER" />
+25-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:17:17-77
+25-->D:\skyan\code\Stronghold-Protocol-Android\app\src\main\AndroidManifest.xml:17:27-74
+26            </intent-filter>
+27        </activity>
+28    </application>
+29
+30</manifest>
