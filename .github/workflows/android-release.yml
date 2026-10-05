@@ -127,8 +127,9 @@ jobs:
           STRONGHOLD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           STRONGHOLD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           STRONGHOLD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          # CI 没有 .cache/assets-ledger.json，用 HEAD 的 Content-Length 补齐 asset-index.json 的文件大小。
-          STRONGHOLD_FILL_ASSET_SIZES: '1'
+          # CI 既没有 .cache/assets-ledger.json，也无从察觉 docs/research/07-assets.json 里的尺寸是否过期，
+          # 因此逐个用源站 Content-Length 校正 asset-index.json 的 bytes（客户端正是拿它比对更新、估算占用）。
+          STRONGHOLD_VERIFY_ASSET_SIZES: '1'
         run: |
           set -euo pipefail
           chmod +x gradlew
