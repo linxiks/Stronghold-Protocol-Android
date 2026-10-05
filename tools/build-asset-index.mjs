@@ -7,6 +7,11 @@
 // The plan is rebuilt here from the same inputs as fetch-assets.mjs main()
 // (offline, from the upstream .cache indexes), so the URLs match exactly.
 //
+// Sizes: `bytes` prefers the upstream .cache/assets-ledger.json (only a machine that ran tools/fetch-assets.mjs has
+// it) and falls back to the plan's declared size. A machine with neither — CI — would ship sizes for ~2/3 of the
+// files, so with STRONGHOLD_FILL_ASSET_SIZES=1 the gaps are filled from HTTP HEAD Content-Length instead; files whose
+// URLs all fail keep `bytes` undefined.
+//
 // Usage: node tools/build-asset-index.mjs <upstreamRoot> <outFile>
 // Output: {"version":1,"manifestHash":…,"files":[{"rel","urls","kind","bytes"?,"pma"?}]}
 
@@ -22,8 +27,8 @@ async function main(argv) {
   const root = resolve(argv[0]);
   const out = resolve(argv[1]);
   const load = (name) => import(pathToFileURL(join(root, 'tools/assets', `${name}.mjs`)).href);
-  const [{ buildPlan }, { collectLeaves }, { loadIndexes }, { indexAudio }, { loadLocalEnemySpines, LOCAL_ENEMY_SPINES_FILE }, { kindOf }] =
-    await Promise.all(['plan', 'manifest', 'cache', 'audio', 'spine', 'formats'].map(load));
+  const [{ buildPlan }, { collectLeaves }, { loadIndexes }, { indexAudio }, { loadLocalEnemySpines, LOCAL_ENEMY_SPINES_FILE }, { kindOf }, { mirrorUrl }] =
+    await Promise.all(['plan', 'manifest', 'cache', 'audio', 'spine', 'formats', 'sources'].map(load));
   const readJson = async (rel) => JSON.parse(await readFile(join(root, rel), 'utf8'));
 
   // Same plan inputs as upstream tools/fetch-assets.mjs main().
@@ -81,7 +86,6 @@ async function main(argv) {
   const ledger = await readJson('.cache/assets-ledger.json').then((j) => j?.files || {}).catch(() => ({}));
   const files = [];
   const missing = [];
-  let totalBytes = 0;
   for (const rel of [...rels].sort()) {
     const p = planned.get(rel);
     const urls = p ? [...p.urls] : [];
@@ -91,16 +95,72 @@ async function main(argv) {
     const kind = kindOf(rel);
     const file = { rel, urls, kind: KINDS.has(kind) ? kind : 'other' };
     const bytes = Number.isFinite(led?.bytes) && led.bytes > 0 ? led.bytes : p?.bytes;
-    if (bytes) { file.bytes = bytes; totalBytes += bytes; }
+    if (bytes) file.bytes = bytes;
     if (file.kind === 'atlas' && pma.get(rel) === true) file.pma = true;
     files.push(file);
   }
   if (missing.length) throw new Error(`no download URL for: ${missing.slice(0, 10).join(', ')}`);
 
+  if (process.env.STRONGHOLD_FILL_ASSET_SIZES === '1') await fillMissingSizes(files, mirrorUrl);
+  const totalBytes = files.reduce((sum, f) => sum + (f.bytes || 0), 0);
+
   await mkdir(dirname(out), { recursive: true });
   await writeFile(`${out}.tmp`, JSON.stringify({ version: 1, manifestHash: manifest.hash, files }));
   await rename(`${out}.tmp`, out);
   console.log(`[asset-index] ${files.length} files, ${totalBytes} bytes → ${out}`);
+}
+
+/**
+ * Fill in the `bytes` of files whose size is unknown here — no .cache/assets-ledger.json and no plan size — from the
+ * response's Content-Length. Enabled by STRONGHOLD_FILL_ASSET_SIZES=1, i.e. the CI release build, where the ledger (a
+ * file only a machine that ran tools/fetch-assets.mjs has) does not exist. A build that has the ledger finds nothing
+ * to fill. URLs are tried in order with the same raw→jsDelivr mirror the client uses; a file whose URLs all fail keeps
+ * `bytes` undefined, exactly as it would be without this switch.
+ */
+async function fillMissingSizes(files, mirrorUrl) {
+  const targets = files.filter((f) => !f.bytes);
+  if (!targets.length) return;
+  const concurrency = Math.max(1, Math.min(32, Number(process.env.STRONGHOLD_FILL_SIZE_CONCURRENCY) || 16));
+  let next = 0;
+  let filled = 0;
+  const worker = async () => {
+    for (let i = next++; i < targets.length; i = next++) {
+      const size = await headContentLength(targets[i].urls, mirrorUrl);
+      if (size) { targets[i].bytes = size; filled++; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, worker));
+  console.log(`[asset-index] size fill: ${filled}/${targets.length} filled from Content-Length`);
+}
+
+/** Content-Length of the first URL that answers a HEAD request, or null. */
+async function headContentLength(urls, mirrorUrl) {
+  for (const url of urls) {
+    for (const src of [url, mirrorUrl(url)].filter(Boolean)) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          // 必须显式要 identity：Node 的 fetch 默认带 accept-encoding: gzip，这时响应里的 Content-Length
+          // 是压缩后大小（文本类 atlas 只有真实大小的约 1/4），直接当成文件大小会写错。
+          const res = await fetch(src, {
+            method: 'HEAD',
+            headers: { 'accept-encoding': 'identity' },
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          // 服务器若无视 identity 仍然压缩，Content-Length 不等于实体大小：宁可留空，也不能写错。
+          const encoding = res.headers.get('content-encoding');
+          if (encoding) throw new Error(`compressed despite identity: ${encoding}`);
+          const length = Number(res.headers.get('content-length'));
+          if (Number.isFinite(length) && length > 0) return length;
+          throw new Error('no content-length');
+        } catch (e) {
+          if (attempt === 3) break;
+          await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+        }
+      }
+    }
+  }
+  return null;
 }
 
 main(process.argv.slice(2)).catch((e) => {

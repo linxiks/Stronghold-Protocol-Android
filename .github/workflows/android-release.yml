@@ -127,10 +127,30 @@ jobs:
           STRONGHOLD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           STRONGHOLD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           STRONGHOLD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # CI 没有 .cache/assets-ledger.json，用 HEAD 的 Content-Length 补齐 asset-index.json 的文件大小。
+          STRONGHOLD_FILL_ASSET_SIZES: '1'
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleRelease
+          ./gradlew --no-daemon --stacktrace assembleRelease &
+          build=$!
+          # 曾经在 :app:compileReleaseKotlin 静默挂到 60 分钟超时。超过 20 分钟（从零构建约 5 分钟）即判为卡死：
+          # 先导出 JVM 线程栈供定位，再终止构建让 job 立刻失败，而不是白等到超时。
+          (
+            sleep 1200
+            kill -0 "$build" 2>/dev/null || exit 0
+            echo "::error::构建已超过 20 分钟，判定为卡死；以下是各 JVM 的线程栈"
+            for pid in $(pgrep java); do
+              echo "=== jstack $pid ==="
+              "$JAVA_HOME/bin/jstack" "$pid" 2>&1 || true
+            done
+            kill "$build" 2>/dev/null || true
+          ) &
+          watchdog=$!
+          status=0
+          wait "$build" || status=$?
+          kill "$watchdog" 2>/dev/null || true
+          exit "$status"
 
       - name: Verify APK
         env:
