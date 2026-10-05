@@ -4,6 +4,7 @@ import android.app.Activity
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import android.net.Uri
 import android.text.InputType
 import android.text.SpannableString
 import android.text.Spanned
@@ -21,19 +22,22 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Space
-import android.widget.TextView
 import android.widget.Toast
 
 /**
- * 原生连接页：左栏标题与本地运行，右栏外部服务器地址与连接历史。
+ * 原生连接页：左栏标题、本地运行与游戏资源，右栏外部服务器地址与连接历史。
  * 历史只由调用方在连接成功后写入；这里只负责展示、删除、清空。
  */
 internal class ConnectionScreen(
     private val activity: Activity,
     private val history: ConnectionHistory,
+    assets: AssetStore,
     private val onLocal: () -> Unit,
     private val onExternal: (serverUrl: String) -> Unit,
+    onPickArchive: () -> Unit,
 ) {
+
+    private val assetPanel = AssetPanel(activity, assets, onPickArchive)
 
     private var expanded = false
     private var clearArmed = false
@@ -53,8 +57,8 @@ internal class ConnectionScreen(
 
         val corner = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            addView(micro("RHODES ISLAND // SIMULATION SERVICE", Palette.MINT_700))
-            addView(micro("TACTICAL CO-OP NODE · 02", Palette.TEXT_DIM))
+            addView(activity.microText("RHODES ISLAND // SIMULATION SERVICE", Palette.MINT_700))
+            addView(activity.microText("TACTICAL CO-OP NODE · 02", Palette.TEXT_DIM))
         }
         root.addView(
             corner,
@@ -80,16 +84,22 @@ internal class ConnectionScreen(
         return root
     }
 
+    fun onArchivePicked(uri: Uri) = assetPanel.onArchivePicked(uri)
+
+    fun onExportPermissionResult(granted: Boolean) = assetPanel.onExportPermissionResult(granted)
+
+    fun dispose() = assetPanel.dispose()
+
     // ---- 左栏 ----
 
     private fun leftColumn() = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
 
-        addView(text("STRONGHOLD PROTOCOL", 13f, Palette.TITLE_EN).apply {
+        addView(activity.styledText("STRONGHOLD PROTOCOL", 13f, Palette.TITLE_EN).apply {
             typeface = StrongholdFonts.display(activity)
             letterSpacing = 0.3f
         })
-        addView(text("ALLIANCE", 15f, Palette.MINT_500).apply {
+        addView(activity.styledText("ALLIANCE", 15f, Palette.MINT_500).apply {
             typeface = StrongholdFonts.display(activity)
             letterSpacing = 0.34f
             setShadowLayer(activity.dpf(7f), 0f, 0f, 0x7317F9B7)
@@ -99,14 +109,14 @@ internal class ConnectionScreen(
             val start = indexOf("盟约")
             setSpan(ForegroundColorSpan(Palette.MINT_500), start, start + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
-        addView(text("", 40f, Palette.TITLE_CN).apply {
+        addView(activity.styledText("", 40f, Palette.TITLE_CN).apply {
             text = title
             typeface = heavyTypeface()
             letterSpacing = 0.06f
             setShadowLayer(activity.dpf(8f), 0f, activity.dpf(2f), 0xB3000000.toInt())
         }, topMargin(6))
 
-        addView(text("选择接入方式", 13f, Palette.TEXT_LO).apply { letterSpacing = 0.1f }, topMargin(4))
+        addView(activity.styledText("选择接入方式", 13f, Palette.TEXT_LO).apply { letterSpacing = 0.1f }, topMargin(4))
 
         val localButton = Button(activity).apply {
             background = activity.primaryButtonBackground()
@@ -120,7 +130,12 @@ internal class ConnectionScreen(
         }
         addView(localButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(56)).apply { topMargin = dp(24) })
 
-        addView(text("使用 APK 内置 Stronghold 服务", 12f, Palette.TEXT_DIM), topMargin(8))
+        addView(activity.styledText("使用 APK 内置 Stronghold 服务", 12f, Palette.TEXT_DIM), topMargin(8))
+
+        addView(
+            assetPanel.createView(),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(20) },
+        )
     }
 
     // ---- 右栏 ----
@@ -133,8 +148,8 @@ internal class ConnectionScreen(
         val header = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(text("外部服务器", 15f, Palette.TEXT_HI).apply { typeface = Typeface.DEFAULT_BOLD })
-            addView(micro("REMOTE SERVER", Palette.TEXT_DIM), startMargin(8))
+            addView(activity.styledText("外部服务器", 15f, Palette.TEXT_HI).apply { typeface = Typeface.DEFAULT_BOLD })
+            addView(activity.microText("REMOTE SERVER", Palette.TEXT_DIM), startMargin(8))
         }
         addView(header, LinearLayout.LayoutParams(MATCH_PARENT, dp(24)))
 
@@ -160,8 +175,8 @@ internal class ConnectionScreen(
         val historyHeader = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(text("最近连接", 13f, Palette.TEXT_MD).apply { typeface = Typeface.DEFAULT_BOLD })
-            addView(micro("HISTORY", Palette.TEXT_DIM), startMargin(8))
+            addView(activity.styledText("最近连接", 13f, Palette.TEXT_MD).apply { typeface = Typeface.DEFAULT_BOLD })
+            addView(activity.microText("HISTORY", Palette.TEXT_DIM), startMargin(8))
             addView(Space(activity), LinearLayout.LayoutParams(0, 0, 1f))
             addView(clearButton, LinearLayout.LayoutParams(WRAP_CONTENT, dp(32)))
         }
@@ -248,7 +263,7 @@ internal class ConnectionScreen(
         val records = history.entries()
 
         if (records.isEmpty()) {
-            historyList.addView(text("暂无连接记录", 12f, Palette.TEXT_DIM).apply {
+            historyList.addView(activity.styledText("暂无连接记录", 12f, Palette.TEXT_DIM).apply {
                 setPadding(0, dp(12), 0, dp(12))
             })
             clearButton.removeCallbacks(disarm)
@@ -320,12 +335,12 @@ internal class ConnectionScreen(
                 orientation = LinearLayout.VERTICAL
                 // 行本身已带完整的 contentDescription，子文本不再单独朗读。
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                addView(text(address, 14f, Palette.TEXT_HI).apply {
+                addView(activity.styledText(address, 14f, Palette.TEXT_HI).apply {
                     typeface = StrongholdFonts.number(activity)
                     setSingleLine(true)
                     ellipsize = TextUtils.TruncateAt.END
                 })
-                addView(text(relative.toString(), 11f, Palette.TEXT_LO))
+                addView(activity.styledText(relative.toString(), 11f, Palette.TEXT_LO))
             }
             addView(labels, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
@@ -368,19 +383,6 @@ internal class ConnectionScreen(
     // ---- 小工具 ----
 
     private fun dp(value: Int) = activity.dp(value)
-
-    private fun text(value: String, sizeSp: Float, color: Int) = TextView(activity).apply {
-        text = value
-        textSize = sizeSp
-        setTextColor(color)
-        includeFontPadding = false
-    }
-
-    /** 上游 `.micro`：Novecento 小号大写注记。 */
-    private fun micro(value: String, color: Int) = text(value, 9f, color).apply {
-        typeface = StrongholdFonts.display(activity)
-        letterSpacing = 0.18f
-    }
 
     private fun topMargin(valueDp: Int) =
         LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(valueDp) }

@@ -89,7 +89,11 @@ val packageStrongholdRuntime by tasks.registering(Zip::class) {
 
     from(strongholdSource) { include("package.json") }
     listOf("data", "public", "server", "shared").forEach { dir ->
-        from(strongholdSource.resolve(dir)) { into(dir) }
+        from(strongholdSource.resolve(dir)) {
+            into(dir)
+            // 游戏素材不随 APK 分发：由连接页下载或从用户的资源包读取。
+            if (dir == "public") exclude("assets/**")
+        }
     }
     from(strongholdNodeModules) {
         into("node_modules")
@@ -117,8 +121,30 @@ val syncStrongholdFonts by tasks.registering(Sync::class) {
     into(strongholdFontsDir.map { it.dir("fonts") })
 }
 
-android.sourceSets.getByName("main").assets.srcDirs(strongholdRuntimeDir, strongholdFontsDir)
+val strongholdAssetIndexDir = layout.buildDirectory.dir("generated/strongholdAssetIndex")
+
+val generateStrongholdAssetIndex by tasks.registering(Exec::class) {
+    group = "stronghold"
+    description = "Builds assets/asset-index.json (download URLs of every manifest asset)"
+    val script = rootProject.file("tools/build-asset-index.mjs")
+    val output = strongholdAssetIndexDir.map { it.file("asset-index.json") }
+    inputs.file(script)
+    inputs.files(
+        listOf(
+            "data/assets.json", "data/enemies.json", "data/tokens.json", "data/bosses.json",
+            "docs/research/03-operators.json", "docs/research/05-enemies.json",
+            "docs/research/05-maps.json", "docs/research/07-assets.json",
+            ".cache/assets-ledger.json", ".cache/gamedata/excel/audio_data.json",
+            ".cache/ark-models/models_data.json",
+        ).map(strongholdSource::resolve)
+    )
+    inputs.files(fileTree(strongholdSource.resolve("tools/assets")))
+    outputs.file(output)
+    commandLine("node", script.absolutePath, strongholdSource.absolutePath, output.get().asFile.absolutePath)
+}
+
+android.sourceSets.getByName("main").assets.srcDirs(strongholdRuntimeDir, strongholdFontsDir, strongholdAssetIndexDir)
 
 tasks.named("preBuild") {
-    dependsOn(packageStrongholdRuntime, syncStrongholdFonts)
+    dependsOn(packageStrongholdRuntime, syncStrongholdFonts, generateStrongholdAssetIndex)
 }

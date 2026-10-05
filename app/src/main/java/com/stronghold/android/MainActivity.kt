@@ -1,19 +1,25 @@
 package com.stronghold.android
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
@@ -24,6 +30,7 @@ class MainActivity : Activity() {
         private const val TAG = "Stronghold"
         private const val LOCAL_SERVER_URL = "http://127.0.0.1:3000"
         private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
+        private const val REQUEST_IMPORT_ASSETS = 1001
     }
 
     /** 当前显示的 WebView；显示连接页时为 null。 */
@@ -37,6 +44,15 @@ class MainActivity : Activity() {
 
     private val history by lazy { ConnectionHistory(this) }
 
+    private val assets by lazy { AssetStore(this) }
+
+    /** 当前显示的连接页；显示 WebView 时为 null。 */
+    private var connectionScreen: ConnectionScreen? = null
+
+    /** 本地模式下 `/assets/` 的来源；外部模式和连接页为 null（不拦截请求）。WebView 在后台线程读取。 */
+    @Volatile
+    private var assetSource: AssetSource? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
@@ -49,9 +65,45 @@ class MainActivity : Activity() {
     // ---- 连接页 ----
 
     private fun showConnectionPage() {
-        setContentView(ConnectionScreen(this, history, ::startLocalMode, ::startExternalMode).createView())
+        val screen = ConnectionScreen(this, history, assets, ::startLocalMode, ::startExternalMode, ::pickAssetArchive)
+        connectionScreen = screen
+        setContentView(screen.createView())
         // 先把 WebView 移出视图树再销毁。
         closeWebView()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun pickAssetArchive() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"),
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        try {
+            startActivityForResult(intent, REQUEST_IMPORT_ASSETS)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "没有可用的文件选择器", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_IMPORT_ASSETS || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        connectionScreen?.onArchivePicked(uri)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != AssetPanel.REQUEST_EXPORT_PERMISSION) return
+        val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        connectionScreen?.onExportPermissionResult(granted)
     }
 
     // ---- 本地 / 外部模式 ----
@@ -64,6 +116,9 @@ class MainActivity : Activity() {
                 val root = StrongholdInstaller.install(applicationContext)
                 Log.i(TAG, "Runtime ready: ${root.absolutePath}")
                 NodeManager.startStronghold(root)
+                // 先就位资源来源再加载页面：runOnUiThread 按顺序执行，一定早于下面的 loadUrl。
+                val source = assets.openSource()
+                runOnUiThread { if (webView === view) assetSource = source else source?.close() }
                 waitForServer(LOCAL_SERVER_URL, 60_000, NodeManager::failureReason)
                 onCurrentWebView(view) { it.loadUrl(LOCAL_SERVER_URL) }
             } catch (t: Throwable) {
@@ -100,6 +155,8 @@ class MainActivity : Activity() {
     // ---- WebView ----
 
     private fun createWebView(): WebView {
+        connectionScreen?.dispose()
+        connectionScreen = null
         closeWebView()
         val view = WebView(this)
         view.settings.apply {
@@ -118,6 +175,25 @@ class MainActivity : Activity() {
                 Log.i(TAG, "WebView loaded: $url")
                 if (view != null && isServerUrl(url)) installAndroidLayoutFix(view)
             }
+
+            /** 本地模式的 `/assets/<rel>` 直接从下载目录或导入的资源包读取；读不到时交给 Node（返回 404，客户端显示占位）。 */
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? {
+                val source = assetSource ?: return null
+                val url = request.url
+                if (request.method != "GET" || url.host != "127.0.0.1" || url.port != 3000) return null
+                val path = url.path ?: return null
+                val rel = path.removePrefix("/assets/").takeIf { it != path && isSafeAssetRel(it) } ?: return null
+                val stream = try {
+                    source.open(rel)
+                } catch (e: IOException) {
+                    Log.w(TAG, "Asset read failed: $rel", e)
+                    null
+                } ?: return null
+                return WebResourceResponse(
+                    assetMimeType(rel), if (rel.endsWith(".atlas")) "utf-8" else null, 200, "OK",
+                    mapOf("Cache-Control" to "no-cache"), stream,
+                )
+            }
         }
         setContentView(view)
         webView = view
@@ -131,6 +207,8 @@ class MainActivity : Activity() {
         setBackInterception(false)
         view.stopLoading()
         view.destroy()
+        assetSource?.close()
+        assetSource = null
     }
 
     /**
@@ -293,6 +371,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        connectionScreen?.dispose()
         closeWebView()
         super.onDestroy()
     }

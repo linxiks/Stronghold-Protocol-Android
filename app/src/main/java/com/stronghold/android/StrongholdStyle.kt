@@ -22,6 +22,7 @@ import android.os.Build
 import android.util.Log
 import android.view.Gravity
 import android.widget.Button
+import android.widget.TextView
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.sin
@@ -32,6 +33,19 @@ import kotlin.math.tan
 internal fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
 internal fun Context.dpf(value: Float): Float = value * resources.displayMetrics.density
+
+internal fun Context.styledText(value: String, sizeSp: Float, color: Int): TextView = TextView(this).apply {
+    text = value
+    textSize = sizeSp
+    setTextColor(color)
+    includeFontPadding = false
+}
+
+/** 上游 `.micro`：Novecento 小号大写注记。 */
+internal fun Context.microText(value: String, color: Int): TextView = styledText(value, 9f, color).apply {
+    typeface = StrongholdFonts.display(this@microText)
+    letterSpacing = 0.18f
+}
 
 internal object Palette {
     const val BG_TOP = 0xFF0B0E0D.toInt()
