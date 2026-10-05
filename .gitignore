@@ -34,3 +34,6 @@ Thumbs.db
 # 签名密钥
 *.jks
 *.keystore
+
+# 本地 nodejs-mobile 构建包（libnode.so 已单独用 LFS 跟踪）
+/*.zip

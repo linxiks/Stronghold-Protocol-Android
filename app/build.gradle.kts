@@ -22,6 +22,9 @@ val strongholdDevPackages: Set<String> by lazy {
     packages.filterValues { it["dev"] == true }.keys.map { it.removePrefix("node_modules/") }.toSet()
 }
 
+// release 签名：CI 通过 STRONGHOLD_KEYSTORE_* 注入；未提供时回退到 AGP 的 debug 签名，保证产物可安装。
+val releaseKeystoreFile = System.getenv("STRONGHOLD_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.stronghold.android"
     compileSdk = 36
@@ -32,8 +35,8 @@ android {
         applicationId = "com.stronghold.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = System.getenv("STRONGHOLD_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("STRONGHOLD_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -63,9 +66,21 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKeystoreFile != null) {
+            create("release") {
+                storeFile = file(releaseKeystoreFile)
+                storePassword = System.getenv("STRONGHOLD_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("STRONGHOLD_KEY_ALIAS")
+                keyPassword = System.getenv("STRONGHOLD_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 }
