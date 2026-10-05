@@ -1,0 +1,39 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin
+.kotlin/
+
+# Android / NDK 构建产物
+.cxx/
+.externalNativeBuild/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# 本机配置
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+
+# 根目录误放的原生库（正式副本位于 app/src/main/jniLibs）
+/*.so
+
+# 签名密钥
+*.jks
+*.keystore
