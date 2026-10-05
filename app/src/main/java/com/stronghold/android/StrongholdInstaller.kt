@@ -11,15 +11,16 @@ object StrongholdInstaller {
     private const val TAG = "StrongholdInstaller"
 
     private const val ARCHIVE_NAME = "stronghold-runtime.zip"
-    private const val RUNTIME_VERSION = "0.1.1"
 
+    @Synchronized
     fun install(context: Context): File {
         val root = File(context.filesDir, "stronghold")
         val marker = File(root, ".installed-version")
+        val stamp = installStamp(context)
 
         if (
             marker.isFile &&
-            marker.readText().trim() == RUNTIME_VERSION &&
+            marker.readText().trim() == stamp &&
             validateRuntime(root)
         ) {
             Log.i(TAG, "Stronghold runtime already installed")
@@ -46,7 +47,7 @@ object StrongholdInstaller {
         }
 
         File(tempRoot, ".installed-version")
-            .writeText(RUNTIME_VERSION)
+            .writeText(stamp)
 
         if (root.exists()) {
             check(root.deleteRecursively()) {
@@ -125,6 +126,11 @@ object StrongholdInstaller {
             }
         }
     }
+
+    // APK 每次安装或更新都会改变 lastUpdateTime，运行时随之重新解压，不用再手动维护版本号。
+    @Suppress("DEPRECATION")
+    private fun installStamp(context: Context): String =
+        context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
 
     private fun validateRuntime(root: File): Boolean {
         return File(root, "server/index.js").isFile &&

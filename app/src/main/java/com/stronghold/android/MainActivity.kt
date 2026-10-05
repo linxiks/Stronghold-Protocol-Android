@@ -1,768 +1,188 @@
-﻿package com.stronghold.android
+package com.stronghold.android
 
 import android.app.Activity
-import android.graphics.Color
+import android.content.pm.ApplicationInfo
+import android.os.Build
 import android.os.Bundle
-import android.text.InputType
+import android.os.SystemClock
 import android.util.Log
-import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
 
     companion object {
         private const val TAG = "Stronghold"
-
-        private const val LOCAL_SERVER_URL =
-            "http://127.0.0.1:3000"
-
-        private const val PREFS_NAME =
-            "stronghold_connection"
-
-        private const val PREF_EXTERNAL_URL =
-            "external_url"
+        private const val LOCAL_SERVER_URL = "http://127.0.0.1:3000"
+        private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
     }
 
-    private lateinit var webView: WebView
+    /** 当前显示的 WebView；显示连接页时为 null。 */
+    private var webView: WebView? = null
 
-    private var currentServerUrl =
-        LOCAL_SERVER_URL
+    /** API 33+ 的 OnBackInvokedCallback；声明为 Any，避免低版本系统解析该类。 */
+    private var backCallback: Any? = null
 
-    private var localMode = true
+    /** 上一次在游戏页按返回的时间（uptimeMillis）；0 表示尚未按过。 */
+    private var lastBackPressAt = 0L
+
+    private val history by lazy { ConnectionHistory(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        WebView.setWebContentsDebuggingEnabled(true)
-
-        if (
-            android.os.Build.VERSION.SDK_INT >=
-            android.os.Build.VERSION_CODES.P
-        ) {
-            window.attributes =
-                window.attributes.apply {
-                    layoutInDisplayCutoutMode =
-                        android.view.WindowManager.LayoutParams
-                            .LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            WebView.setWebContentsDebuggingEnabled(true)
         }
-
         configureFullscreen()
-
         showConnectionPage()
     }
 
-    /*
-     * ---------------------------------------------------------
-     * Connection entry page
-     * ---------------------------------------------------------
-     */
+    // ---- 连接页 ----
 
     private fun showConnectionPage() {
-        val prefs =
-            getSharedPreferences(
-                PREFS_NAME,
-                MODE_PRIVATE
-            )
-
-        val savedExternalUrl =
-            prefs.getString(
-                PREF_EXTERNAL_URL,
-                ""
-            ).orEmpty()
-
-        val root =
-            LinearLayout(this).apply {
-                orientation =
-                    LinearLayout.VERTICAL
-
-                gravity =
-                    Gravity.CENTER
-
-                setPadding(
-                    dp(32),
-                    dp(24),
-                    dp(32),
-                    dp(24)
-                )
-
-                setBackgroundColor(
-                    Color.rgb(
-                        13,
-                        15,
-                        18
-                    )
-                )
-            }
-
-        val container =
-            LinearLayout(this).apply {
-                orientation =
-                    LinearLayout.VERTICAL
-
-                gravity =
-                    Gravity.CENTER_HORIZONTAL
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        dp(420),
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    )
-            }
-
-        val title =
-            TextView(this).apply {
-                text =
-                    "STRONGHOLD PROTOCOL"
-
-                textSize = 24f
-
-                setTextColor(
-                    Color.WHITE
-                )
-
-                gravity =
-                    Gravity.CENTER
-            }
-
-        val subtitle =
-            TextView(this).apply {
-                text =
-                    "选择接入方式"
-
-                textSize = 16f
-
-                setTextColor(
-                    Color.rgb(
-                        180,
-                        190,
-                        195
-                    )
-                )
-
-                gravity =
-                    Gravity.CENTER
-
-                setPadding(
-                    0,
-                    dp(8),
-                    0,
-                    dp(28)
-                )
-            }
-
-        val localButton =
-            Button(this).apply {
-                text =
-                    "本地运行"
-
-                isAllCaps =
-                    false
-
-                setOnClickListener {
-                    startLocalMode()
-                }
-            }
-
-        val localDescription =
-            TextView(this).apply {
-                text =
-                    "使用 APK 内置 Stronghold 服务"
-
-                textSize = 12f
-
-                setTextColor(
-                    Color.rgb(
-                        130,
-                        140,
-                        145
-                    )
-                )
-
-                gravity =
-                    Gravity.CENTER
-
-                setPadding(
-                    0,
-                    dp(6),
-                    0,
-                    dp(22)
-                )
-            }
-
-        val separator =
-            TextView(this).apply {
-                text =
-                    "或连接外部服务器"
-
-                textSize = 13f
-
-                setTextColor(
-                    Color.rgb(
-                        160,
-                        170,
-                        175
-                    )
-                )
-
-                gravity =
-                    Gravity.CENTER
-
-                setPadding(
-                    0,
-                    dp(6),
-                    0,
-                    dp(12)
-                )
-            }
-
-        val addressInput =
-            EditText(this).apply {
-                hint =
-                    "192.168.1.100:3000"
-
-                setText(
-                    savedExternalUrl
-                )
-
-                setTextColor(
-                    Color.WHITE
-                )
-
-                setHintTextColor(
-                    Color.rgb(
-                        100,
-                        110,
-                        115
-                    )
-                )
-
-                textSize = 15f
-
-                setSingleLine(true)
-
-                inputType =
-                    InputType.TYPE_CLASS_TEXT or
-                        InputType.TYPE_TEXT_VARIATION_URI
-
-                setPadding(
-                    dp(14),
-                    0,
-                    dp(14),
-                    0
-                )
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        dp(50)
-                    )
-            }
-
-        val externalButton =
-            Button(this).apply {
-                text =
-                    "连接外部服务器"
-
-                isAllCaps =
-                    false
-
-                layoutParams =
-                    LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        dp(52)
-                    ).apply {
-                        topMargin =
-                            dp(12)
-                    }
-
-                setOnClickListener {
-                    val input =
-                        addressInput.text
-                            .toString()
-                            .trim()
-
-                    if (input.isBlank()) {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "请输入服务器地址",
-                            Toast.LENGTH_SHORT
-                        ).show()
-
-                        return@setOnClickListener
-                    }
-
-                    val normalizedUrl =
-                        normalizeServerUrl(
-                            input
-                        )
-
-                    prefs.edit()
-                        .putString(
-                            PREF_EXTERNAL_URL,
-                            input
-                        )
-                        .apply()
-
-                    startExternalMode(
-                        normalizedUrl
-                    )
-                }
-            }
-
-        container.addView(
-            title
-        )
-
-        container.addView(
-            subtitle
-        )
-
-        container.addView(
-            localButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(54)
-            )
-        )
-
-        container.addView(
-            localDescription
-        )
-
-        container.addView(
-            separator
-        )
-
-        container.addView(
-            addressInput
-        )
-
-        container.addView(
-            externalButton
-        )
-
-        root.addView(
-            container
-        )
-
-        setContentView(
-            root
-        )
+        setContentView(ConnectionScreen(this, history, ::startLocalMode, ::startExternalMode).createView())
+        // 先把 WebView 移出视图树再销毁。
+        closeWebView()
     }
 
-    /*
-     * ---------------------------------------------------------
-     * Local / external modes
-     * ---------------------------------------------------------
-     */
+    // ---- 本地 / 外部模式 ----
 
     private fun startLocalMode() {
-        localMode = true
-
-        currentServerUrl =
-            LOCAL_SERVER_URL
-
-        createWebView()
-
-        showLoadingPage(
-            "Preparing Stronghold..."
-        )
-
-        Thread {
+        val view = createWebView()
+        showLoadingPage(view, "Preparing Stronghold...")
+        thread(name = "Stronghold-Bootstrap") {
             try {
-                val root =
-                    StrongholdInstaller.install(
-                        this
-                    )
-
-                Log.i(
-                    TAG,
-                    "Runtime ready: ${root.absolutePath}"
-                )
-
-                NodeManager.startStronghold(
-                    root
-                )
-
-                waitForServer(
-                    currentServerUrl,
-                    60_000
-                )
-
-                runOnUiThread {
-                    webView.loadUrl(
-                        currentServerUrl
-                    )
-                }
+                val root = StrongholdInstaller.install(applicationContext)
+                Log.i(TAG, "Runtime ready: ${root.absolutePath}")
+                NodeManager.startStronghold(root)
+                waitForServer(LOCAL_SERVER_URL, 60_000, NodeManager::failureReason)
+                onCurrentWebView(view) { it.loadUrl(LOCAL_SERVER_URL) }
             } catch (t: Throwable) {
-                Log.e(
-                    TAG,
-                    "Stronghold startup failed",
-                    t
-                )
-
-                showError(
-                    "Stronghold startup failed",
-                    t.stackTraceToString()
-                )
+                Log.e(TAG, "Stronghold startup failed", t)
+                onCurrentWebView(view) { showError(it, "Stronghold startup failed", t.stackTraceToString()) }
             }
-        }.apply {
-            name =
-                "Stronghold-Bootstrap"
-
-            start()
         }
     }
 
-    private fun startExternalMode(
-        serverUrl: String
-    ) {
-        localMode = false
-
-        currentServerUrl =
-            serverUrl
-
-        createWebView()
-
-        showLoadingPage(
-            "Connecting to $serverUrl..."
-        )
-
-        Thread {
+    private fun startExternalMode(serverUrl: String) {
+        val view = createWebView()
+        showLoadingPage(view, "Connecting to $serverUrl...")
+        // 外部模式不解压、也不启动内置运行时。
+        thread(name = "Stronghold-External") {
             try {
-                /*
-                 * External mode:
-                 *
-                 * Do NOT extract the embedded runtime.
-                 * Do NOT start the embedded Node server.
-                 */
-                waitForServer(
-                    serverUrl,
-                    15_000
-                )
-
-                runOnUiThread {
-                    webView.loadUrl(
-                        serverUrl
-                    )
-                }
+                waitForServer(serverUrl, 15_000)
+                // 只记录确实连上的服务器。
+                history.record(serverUrl)
+                onCurrentWebView(view) { it.loadUrl(serverUrl) }
             } catch (t: Throwable) {
-                Log.e(
-                    TAG,
-                    "External server connection failed",
-                    t
-                )
-
-                showError(
-                    "Unable to connect",
-                    """
-                    Server:
-                    $serverUrl
-
-                    ${t.message ?: "Unknown error"}
-                    """.trimIndent()
-                )
+                Log.e(TAG, "External server connection failed", t)
+                onCurrentWebView(view) {
+                    showError(it, "Unable to connect", "Server:\n$serverUrl\n\n${t.message ?: "Unknown error"}")
+                }
             }
-        }.apply {
-            name =
-                "Stronghold-External"
-
-            start()
         }
     }
 
-    /*
-     * ---------------------------------------------------------
-     * WebView
-     * ---------------------------------------------------------
-     */
-
-    private fun createWebView() {
-        webView =
-            WebView(this)
-
-        configureWebView()
-
-        setContentView(
-            webView
-        )
-
-        webView.post {
-            val metrics =
-                resources.displayMetrics
-
-            Log.i(
-                TAG,
-                "DISPLAY=${metrics.widthPixels}x${metrics.heightPixels}"
-            )
-
-            Log.i(
-                TAG,
-                "WEBVIEW=${webView.width}x${webView.height}"
-            )
-
-            val location =
-                IntArray(2)
-
-            webView.getLocationOnScreen(
-                location
-            )
-
-            Log.i(
-                TAG,
-                "WEBVIEW location=${location.contentToString()}"
-            )
-        }
+    /** 仅当 [view] 仍是当前显示的 WebView 时，才在 UI 线程执行 [action]（期间它可能已被关闭或替换）。 */
+    private fun onCurrentWebView(view: WebView, action: (WebView) -> Unit) {
+        runOnUiThread { if (webView === view) action(view) }
     }
 
-    private fun configureWebView() {
-        webView.settings.apply {
+    // ---- WebView ----
+
+    private fun createWebView(): WebView {
+        closeWebView()
+        val view = WebView(this)
+        view.settings.apply {
             javaScriptEnabled = true
-
             domStorageEnabled = true
-
-            cacheMode =
-                WebSettings.LOAD_DEFAULT
-
-            allowFileAccess = true
-
-            allowContentAccess = true
-
-            mediaPlaybackRequiresUserGesture =
-                false
-
-            builtInZoomControls =
-                false
-
-            displayZoomControls =
-                false
+            cacheMode = WebSettings.LOAD_DEFAULT
+            allowFileAccess = false
+            allowContentAccess = false
+            mediaPlaybackRequiresUserGesture = false
+            builtInZoomControls = false
+            displayZoomControls = false
         }
-
-        webView.webViewClient =
-            object : WebViewClient() {
-
-                override fun onPageFinished(
-                    view: WebView?,
-                    url: String?
-                ) {
-                    super.onPageFinished(
-                        view,
-                        url
-                    )
-
-                    Log.i(
-                        TAG,
-                        "WebView loaded: $url"
-                    )
-
-                    /*
-                     * Android-specific Stronghold layout fix.
-                     *
-                     * The upstream web UI reserves 44 CSS px
-                     * on the left side of .screen.
-                     *
-                     * Do not modify the upstream project.
-                     */
-                    if (
-                        url?.startsWith("http://") == true ||
-                        url?.startsWith("https://") == true
-                    ) {
-                        installAndroidLayoutFix(
-                            view
-                        )
-                    }
-                }
+        view.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                Log.i(TAG, "WebView loaded: $url")
+                if (view != null && isServerUrl(url)) installAndroidLayoutFix(view)
             }
+        }
+        setContentView(view)
+        webView = view
+        setBackInterception(true)
+        return view
     }
 
-    private fun installAndroidLayoutFix(
-        view: WebView?
-    ) {
-        view?.evaluateJavascript(
+    private fun closeWebView() {
+        val view = webView ?: return
+        webView = null
+        setBackInterception(false)
+        view.stopLoading()
+        view.destroy()
+    }
+
+    /**
+     * 上游 public/css/devices.css 中 `.screen:not(.gm) { left: var(--sa-l) }` 在 SHORT_EDGES 刘海模式下
+     * 会在左侧留出安全区。这里不改上游代码，只注入一条覆盖规则；SPA 内跳转不会移除该样式。
+     */
+    private fun installAndroidLayoutFix(view: WebView) {
+        view.evaluateJavascript(
             """
             (() => {
-                const STYLE_ID =
-                    'stronghold-android-layout-fix';
-
-                // 1. Persistent CSS override
-                let style =
-                    document.getElementById(STYLE_ID);
-
-                if (!style) {
-                    style =
-                        document.createElement('style');
-
-                    style.id =
-                        STYLE_ID;
-
-                    style.textContent = `
-                        .screen {
-                            left: 0 !important;
-                        }
-                    `;
-
-                    (
-                        document.head ||
-                        document.documentElement
-                    ).appendChild(style);
-                }
-
-                // 2. Also force existing screens directly
-                const fixScreens = () => {
-                    document
-                        .querySelectorAll('.screen')
-                        .forEach(screen => {
-                            screen.style.setProperty(
-                                'left',
-                                '0px',
-                                'important'
-                            );
-                        });
-                };
-
-                fixScreens();
-
-                // 3. Watch later SPA rendering / attribute changes
-                if (
-                    !window.__strongholdAndroidObserver
-                ) {
-                    const observer =
-                        new MutationObserver(() => {
-                            fixScreens();
-                        });
-
-                    observer.observe(
-                        document.documentElement,
-                        {
-                            childList: true,
-                            subtree: true,
-                            attributes: true,
-                            attributeFilter: [
-                                'class',
-                                'style'
-                            ]
-                        }
-                    );
-
-                    window.__strongholdAndroidObserver =
-                        observer;
-                }
-
-                return {
-                    installed: true,
-                    url: location.href,
-                    screens:
-                        [...document.querySelectorAll('.screen')]
-                            .map(x => ({
-                                className: x.className,
-                                left:
-                                    x.getBoundingClientRect().left,
-                                width:
-                                    x.getBoundingClientRect().width
-                            }))
-                };
+                const id = 'stronghold-android-layout-fix';
+                if (document.getElementById(id)) return;
+                const style = document.createElement('style');
+                style.id = id;
+                style.textContent = '.screen { left: 0 !important; }';
+                (document.head || document.documentElement).appendChild(style);
             })();
-            """.trimIndent()
-        ) { result ->
-            Log.i(
-                TAG,
-                "Android layout fix: $result"
-            )
-        }
-    }
-
-    /*
-     * ---------------------------------------------------------
-     * Server
-     * ---------------------------------------------------------
-     */
-
-    private fun waitForServer(
-        serverUrl: String,
-        timeoutMs: Long
-    ) {
-        val start =
-            System.currentTimeMillis()
-
-        while (
-            System.currentTimeMillis() -
-                start <
-                timeoutMs
-        ) {
-            if (
-                isServerReady(
-                    serverUrl
-                )
-            ) {
-                Log.i(
-                    TAG,
-                    "Stronghold server is ready: $serverUrl"
-                )
-
-                return
-            }
-
-            Thread.sleep(
-                250
-            )
-        }
-
-        throw IllegalStateException(
-            "Server did not become ready: $serverUrl"
+            """.trimIndent(),
+            null
         )
     }
 
-    private fun isServerReady(
-        serverUrl: String
-    ): Boolean {
-        /*
-         * Use "/" rather than relying on /healthz.
-         *
-         * This also makes external Stronghold servers
-         * easier to connect to.
-         */
-        var connection:
-            HttpURLConnection? =
-            null
+    private fun isServerUrl(url: String?) =
+        url != null && (url.startsWith("http://") || url.startsWith("https://"))
 
+    // ---- 服务器 ----
+
+    private fun waitForServer(serverUrl: String, timeoutMs: Long, failureReason: () -> String? = { null }) {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            failureReason()?.let { throw IllegalStateException(it) }
+            if (isServerReady(serverUrl)) {
+                Log.i(TAG, "Stronghold server is ready: $serverUrl")
+                return
+            }
+            Thread.sleep(250)
+        }
+        throw IllegalStateException("Server did not become ready: $serverUrl")
+    }
+
+    /** 探测 "/" 而不是 /healthz，方便连接外部 Stronghold 服务器。 */
+    private fun isServerReady(serverUrl: String): Boolean {
+        var connection: HttpURLConnection? = null
         return try {
-            connection =
-                URL(
-                    "${
-                        serverUrl.trimEnd('/')
-                    }/"
-                ).openConnection()
-                    as HttpURLConnection
-
-            connection.connectTimeout =
-                750
-
-            connection.readTimeout =
-                750
-
-            connection.requestMethod =
-                "GET"
-
-            connection.useCaches =
-                false
-
-            connection.instanceFollowRedirects =
-                true
-
-            connection.responseCode in
-                200..399
+            connection = (URL("${serverUrl.trimEnd('/')}/").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 750
+                readTimeout = 750
+                requestMethod = "GET"
+                useCaches = false
+                instanceFollowRedirects = true
+            }
+            connection.responseCode in 200..399
         } catch (_: Exception) {
             false
         } finally {
@@ -770,161 +190,58 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun normalizeServerUrl(
-        input: String
-    ): String {
-        var value =
-            input.trim()
-                .trimEnd('/')
+    // ---- 加载页 / 错误页 ----
 
-        if (
-            !value.startsWith(
-                "http://",
-                ignoreCase = true
-            ) &&
-            !value.startsWith(
-                "https://",
-                ignoreCase = true
-            )
-        ) {
-            value =
-                "http://$value"
-        }
-
-        return value
+    private fun showLoadingPage(view: WebView, message: String) {
+        loadHtml(
+            view,
+            """
+            <body style="margin:0;background:#0d0f12;color:#e8e8e8;font-family:sans-serif;
+                         display:flex;align-items:center;justify-content:center;height:100vh">
+                <div style="text-align:center">
+                    <h2>Stronghold Protocol</h2>
+                    <p>${escapeHtml(message)}</p>
+                </div>
+            </body>
+            """
+        )
     }
 
-    /*
-     * ---------------------------------------------------------
-     * Loading / error pages
-     * ---------------------------------------------------------
-     */
-
-    private fun showLoadingPage(
-        message: String
-    ) {
-        runOnUiThread {
-            webView.loadData(
-                """
-                <!doctype html>
-                <html>
-                <head>
-                    <meta
-                        name="viewport"
-                        content="width=device-width,initial-scale=1"
-                    >
-                </head>
-
-                <body style="
-                    margin:0;
-                    background:#0d0f12;
-                    color:#e8e8e8;
-                    font-family:sans-serif;
-                    display:flex;
-                    align-items:center;
-                    justify-content:center;
-                    height:100vh;
-                ">
-                    <div style="text-align:center">
-                        <h2>
-                            Stronghold Protocol
-                        </h2>
-
-                        <p>
-                            ${escapeHtml(message)}
-                        </p>
-                    </div>
-                </body>
-                </html>
-                """.trimIndent(),
-                "text/html",
-                "UTF-8"
-            )
-        }
+    private fun showError(view: WebView, title: String, message: String) {
+        loadHtml(
+            view,
+            """
+            <body style="margin:0;background:#111;color:#eee;font-family:monospace;padding:20px;box-sizing:border-box">
+                <h2>${escapeHtml(title)}</h2>
+                <pre style="white-space:pre-wrap;word-break:break-word">${escapeHtml(message)}</pre>
+            </body>
+            """
+        )
     }
 
-    private fun showError(
-        title: String,
-        message: String
-    ) {
-        runOnUiThread {
-            webView.loadData(
-                """
-                <!doctype html>
-                <html>
-                <head>
-                    <meta
-                        name="viewport"
-                        content="width=device-width,initial-scale=1"
-                    >
-                </head>
-
-                <body style="
-                    margin:0;
-                    background:#111;
-                    color:#eee;
-                    font-family:monospace;
-                    padding:20px;
-                    box-sizing:border-box;
-                ">
-                    <h2>
-                        ${escapeHtml(title)}
-                    </h2>
-
-                    <pre style="
-                        white-space:pre-wrap;
-                        word-break:break-word;
-                    ">${
-                        escapeHtml(
-                            message
-                        )
-                    }</pre>
-                </body>
-                </html>
-                """.trimIndent(),
-                "text/html",
-                "UTF-8"
-            )
-        }
+    /** loadDataWithBaseURL 不按 URL 解析内容，`#`、`%` 不会截断页面（loadData 会）。 */
+    private fun loadHtml(view: WebView, body: String) {
+        val html = """
+            <!doctype html>
+            <html>
+            <head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+            ${body.trimIndent()}
+            </html>
+        """.trimIndent()
+        view.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
     }
 
-    private fun escapeHtml(
-        value: String
-    ): String {
-        return value
-            .replace(
-                "&",
-                "&amp;"
-            )
-            .replace(
-                "<",
-                "&lt;"
-            )
-            .replace(
-                ">",
-                "&gt;"
-            )
-    }
+    private fun escapeHtml(value: String) =
+        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    /*
-     * ---------------------------------------------------------
-     * Fullscreen
-     * ---------------------------------------------------------
-     */
+    // ---- 全屏 ----
 
     private fun configureFullscreen() {
-        if (
-            android.os.Build.VERSION.SDK_INT >=
-            android.os.Build.VERSION_CODES.P
-        ) {
-            window.attributes =
-                window.attributes.apply {
-                    layoutInDisplayCutoutMode =
-                        android.view.WindowManager.LayoutParams
-                            .LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
         }
-
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility =
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
@@ -935,65 +252,48 @@ class MainActivity : Activity() {
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE
     }
 
-    override fun onWindowFocusChanged(
-        hasFocus: Boolean
-    ) {
-        super.onWindowFocusChanged(
-            hasFocus
-        )
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) configureFullscreen()
+    }
 
-        if (hasFocus) {
-            configureFullscreen()
+    // ---- 返回键 ----
+
+    /**
+     * API 33+：只在显示 WebView 时注册回调；连接页不注册，交给系统默认行为（退出，并保留预测性返回动画）。
+     * targetSdk 36 下 onBackPressed 不再被调用，所以必须走这里。
+     */
+    private fun setBackInterception(enabled: Boolean) {
+        lastBackPressAt = 0L
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        (backCallback as OnBackInvokedCallback?)?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+        backCallback = null
+        if (enabled) {
+            val callback = OnBackInvokedCallback { handleBack() }
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback)
+            backCallback = callback
         }
     }
 
-    /*
-     * ---------------------------------------------------------
-     * Navigation
-     * ---------------------------------------------------------
-     */
-
-    @Deprecated(
-        "Deprecated in Android API"
-    )
-    override fun onBackPressed() {
-        if (
-            ::webView.isInitialized
-        ) {
-            if (
-                webView.canGoBack()
-            ) {
-                webView.goBack()
-            } else {
-                webView.stopLoading()
-                webView.destroy()
-
-                showConnectionPage()
-            }
-
+    /** 游戏页按返回不离开页面：第一次提示，[EXIT_CONFIRM_WINDOW_MS] 内再按一次才退出。 */
+    private fun handleBack() {
+        val now = SystemClock.uptimeMillis()
+        if (lastBackPressAt != 0L && now - lastBackPressAt < EXIT_CONFIRM_WINDOW_MS) {
+            finish()
             return
         }
+        lastBackPressAt = now
+        Toast.makeText(this, "再按一次返回退出", Toast.LENGTH_SHORT).show()
+    }
 
-        super.onBackPressed()
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        // 仅 API < 33 会走到这里。
+        if (webView != null) handleBack() else super.onBackPressed()
     }
 
     override fun onDestroy() {
-        if (
-            ::webView.isInitialized
-        ) {
-            webView.stopLoading()
-            webView.destroy()
-        }
-
+        closeWebView()
         super.onDestroy()
-    }
-
-    private fun dp(
-        value: Int
-    ): Int {
-        return (
-            value *
-                resources.displayMetrics.density
-            ).toInt()
     }
 }

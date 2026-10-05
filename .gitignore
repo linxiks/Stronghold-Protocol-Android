@@ -31,9 +31,6 @@ Thumbs.db
 # 日志
 *.log
 
-# 根目录误放的原生库（正式副本位于 app/src/main/jniLibs）
-/*.so
-
 # 签名密钥
 *.jks
 *.keystore
