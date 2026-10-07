@@ -111,6 +111,13 @@ internal class AssetStore(context: Context) {
     /** 是否装过资源：下载目录或导入的资源包任一存在。 */
     fun hasAssets(): Boolean = filesRoot.isDirectory || importInfo() != null
 
+    /** 连接外部服务器时，即使资源版本与本地不一致也优先使用本地资源（连接页的开关）。 */
+    fun preferLocalAlways(): Boolean = prefs.getBoolean(KEY_PREFER_LOCAL, false)
+
+    fun setPreferLocalAlways(value: Boolean) {
+        prefs.edit().putBoolean(KEY_PREFER_LOCAL, value).apply()
+    }
+
     /** 本地模式使用的来源：下载目录优先、资源包兜底；都没有时返回 null（请求交给 Node，返回 404，客户端显示占位）。 */
     fun openSource(): AssetSource? {
         val downloaded = if (filesRoot.isDirectory) DirectoryAssetSource(filesRoot) else null
@@ -197,6 +204,7 @@ internal class AssetStore(context: Context) {
         const val PREFS_NAME = "stronghold_assets"
         /** 1.1 之前的「在线下载 / 资源包」模式标记，只用于清理旧值。 */
         const val KEY_ORIGIN = "origin"
+        const val KEY_PREFER_LOCAL = "prefer_local_assets"
         const val KEY_IMPORT_URI = "import_uri"
         const val KEY_IMPORT_NAME = "import_name"
         const val KEY_IMPORT_BYTES = "import_bytes"

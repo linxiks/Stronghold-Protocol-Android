@@ -31,7 +31,7 @@ import android.widget.Toast
 internal class ConnectionScreen(
     private val activity: Activity,
     private val history: ConnectionHistory,
-    assets: AssetStore,
+    private val assets: AssetStore,
     private val onLocal: () -> Unit,
     private val onExternal: (serverUrl: String) -> Unit,
     onPickArchive: () -> Unit,
@@ -43,6 +43,7 @@ internal class ConnectionScreen(
     private var clearArmed = false
     private lateinit var historyList: LinearLayout
     private lateinit var clearButton: Button
+    private lateinit var localAssetsButton: Button
     private lateinit var addressInput: EditText
 
     private val disarm = Runnable {
@@ -155,6 +156,17 @@ internal class ConnectionScreen(
 
         addView(inputRow(), LinearLayout.LayoutParams(MATCH_PARENT, dp(48)).apply { topMargin = dp(12) })
 
+        // 版本判据之外的人工开关：外部服务器的资源与本地不是同一版时，是否仍优先用本机的。
+        localAssetsButton = Button(activity).apply {
+            background = ghostBackground()
+            flat()
+            setPadding(dp(10), 0, dp(10), 0)
+            textSize = 12f
+            setOnClickListener { toggleLocalAssets() }
+        }
+        addView(localAssetsButton, LinearLayout.LayoutParams(WRAP_CONTENT, dp(32)).apply { topMargin = dp(8) })
+        renderLocalAssetsButton()
+
         val divider = View(activity).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
@@ -247,6 +259,23 @@ internal class ConnectionScreen(
     }
 
     // ---- 行为 ----
+
+    /** 外部服务器资源与本地不是同一版时，是否仍优先用本机资源；判据在每次连接时重新算。 */
+    private fun toggleLocalAssets() {
+        val next = !assets.preferLocalAlways()
+        assets.setPreferLocalAlways(next)
+        renderLocalAssetsButton()
+        Toast.makeText(
+            activity,
+            if (next) "已设为始终使用本地资源，重新连接后生效" else "已恢复：仅当资源版本一致时使用本地",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    private fun renderLocalAssetsButton() {
+        localAssetsButton.text =
+            if (assets.preferLocalAlways()) "本地资源：始终优先" else "本地资源：版本一致时启用"
+    }
 
     /** 只发起连接；历史由调用方在连接成功后写入。 */
     private fun connectFromInput() {

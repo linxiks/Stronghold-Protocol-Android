@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -29,6 +30,8 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "Stronghold"
         private const val LOCAL_SERVER_URL = "http://127.0.0.1:3000"
+        /** [LOCAL_SERVER_URL] 在 WebView 里呈现的 authority，用于判断该不该拦截请求。 */
+        private const val LOCAL_AUTHORITY = "127.0.0.1:3000"
         private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
         private const val REQUEST_IMPORT_ASSETS = 1001
     }
@@ -49,9 +52,13 @@ class MainActivity : Activity() {
     /** 当前显示的连接页；显示 WebView 时为 null。 */
     private var connectionScreen: ConnectionScreen? = null
 
-    /** 本地模式下 `/assets/` 的来源；外部模式和连接页为 null（不拦截请求）。WebView 在后台线程读取。 */
+    /** `/assets/` 的来源：本地模式、以及外部模式下资源版本一致（或被强制）时的同一批文件。WebView 在后台线程读取。 */
     @Volatile
     private var assetSource: AssetSource? = null
+
+    /** [assetSource] 只对哪个 authority（`host:port`）生效：内置服务，或当前连接的外部服务器。 */
+    @Volatile
+    private var assetAuthority: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -118,7 +125,14 @@ class MainActivity : Activity() {
                 NodeManager.startStronghold(root)
                 // 先就位资源来源再加载页面：runOnUiThread 按顺序执行，一定早于下面的 loadUrl。
                 val source = assets.openSource()
-                runOnUiThread { if (webView === view) assetSource = source else source?.close() }
+                runOnUiThread {
+                    if (webView === view) {
+                        assetSource = source
+                        assetAuthority = LOCAL_AUTHORITY
+                    } else {
+                        source?.close()
+                    }
+                }
                 waitForServer(LOCAL_SERVER_URL, 60_000, NodeManager::failureReason)
                 onCurrentWebView(view) { it.loadUrl(LOCAL_SERVER_URL) }
             } catch (t: Throwable) {
@@ -131,18 +145,49 @@ class MainActivity : Activity() {
     private fun startExternalMode(serverUrl: String) {
         val view = createWebView()
         showLoadingPage(view, "Connecting to $serverUrl...")
-        // 外部模式不解压、也不启动内置运行时。
+        // 外部模式不解压、也不启动内置运行时，只可能把 /assets/* 交给本机已有的资源。
         thread(name = "Stronghold-External") {
             try {
                 waitForServer(serverUrl, 15_000)
                 // 只记录确实连上的服务器。
                 history.record(serverUrl)
+                installLocalAssetsFor(view, serverUrl)
                 onCurrentWebView(view) { it.loadUrl(serverUrl) }
             } catch (t: Throwable) {
                 Log.e(TAG, "External server connection failed", t)
                 onCurrentWebView(view) {
                     showError(it, "Unable to connect", "Server:\n$serverUrl\n\n${t.message ?: "Unknown error"}")
                 }
+            }
+        }
+    }
+
+    /**
+     * 决定要不要把远程服务器的 `/assets/…` 交给本机已有的资源：页面与逻辑仍来自服务器，只有那些同名的
+     * 静态文件走本地。判据是两边 `data/assets.json` 的清单 hash —— 上游没有内容寻址，这个 hash 只覆盖
+     * URL 集合，所以它证明的是「同一版清单」，不是字节相同。连接页的开关可让用户忽略这个判据。
+     */
+    private fun installLocalAssetsFor(view: WebView, serverUrl: String) {
+        if (!assets.hasAssets()) return
+        val localHash = AssetIndex.get(this).manifestHash
+        val remoteHash = RemoteAssets.manifestHash(serverUrl)
+        if (remoteHash != localHash && !assets.preferLocalAlways()) {
+            Log.i(TAG, "Remote assets differ (remote=$remoteHash, local=$localHash); loading them from $serverUrl")
+            return
+        }
+        val source = assets.openSource() ?: return
+        val authority = Uri.parse(serverUrl).authority
+        if (authority == null) {
+            source.close()
+            return
+        }
+        Log.i(TAG, "Serving /assets/* from local resources for $serverUrl (remote=$remoteHash, local=$localHash)")
+        runOnUiThread {
+            if (webView === view) {
+                assetSource = source
+                assetAuthority = authority
+            } else {
+                source.close()
             }
         }
     }
@@ -176,13 +221,16 @@ class MainActivity : Activity() {
                 if (view != null && isServerUrl(url)) installAndroidLayoutFix(view)
             }
 
-            /** 本地模式的 `/assets/<rel>` 直接从下载目录或导入的资源包读取；读不到时交给 Node（返回 404，客户端显示占位）。 */
+            /**
+             * `/assets/<rel>`（以及音频那条扩展名省略的 `/media/…`）优先从本机已有的资源读取：
+             * 本地模式读内置服务要的那批文件；外部模式在资源版本一致（或被用户强制）时读同一批文件，
+             * 页面逻辑始终来自服务器。本机没有该文件时返回 null，请求照常走网络。
+             */
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? {
                 val source = assetSource ?: return null
                 val url = request.url
-                if (request.method != "GET" || url.host != "127.0.0.1" || url.port != 3000) return null
-                val path = url.path ?: return null
-                val rel = path.removePrefix("/assets/").takeIf { it != path && isSafeAssetRel(it) } ?: return null
+                if (request.method != "GET" || url.authority != assetAuthority) return null
+                val rel = RemoteAssets.relFor(url.path ?: return null, source) ?: return null
                 val stream = try {
                     source.open(rel)
                 } catch (e: IOException) {
@@ -209,6 +257,7 @@ class MainActivity : Activity() {
         view.destroy()
         assetSource?.close()
         assetSource = null
+        assetAuthority = null
     }
 
     /**
