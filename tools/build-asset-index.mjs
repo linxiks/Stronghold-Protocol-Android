@@ -5,7 +5,8 @@
 // The game art is not shipped in the APK; the connection page downloads it on
 // the device from the same sources the upstream tools/fetch-assets.mjs uses.
 // The plan is rebuilt here from the same inputs as fetch-assets.mjs main()
-// (offline, from the upstream .cache indexes), so the URLs match exactly.
+// (offline, from the upstream .cache indexes), so the URLs match exactly — including the operator battle
+// voice, which plan.mjs needs as the cached .cache/gamedata/excel/charword_table.json (see the buildPlan call).
 //
 // Sizes: `bytes` prefers the upstream .cache/assets-ledger.json (only a machine that ran tools/fetch-assets.mjs has
 // it) and falls back to the plan's declared size. Neither can be assumed current — the ledger is a snapshot of when
@@ -54,6 +55,10 @@ async function main(argv) {
   const localEnemySpines = await loadLocalEnemySpines(join(root, LOCAL_ENEMY_SPINES_FILE));
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData: indexes.modelsData,
+    // 上游 fetch-assets.mjs main() 同样传 charword + voiceLang：manifest 自 v0.1.2 起引用动作语音
+    // (audio/voice/**)，不传这两个参数时 plan 里没有 voice 的 URL，下面的 walk 会以
+    // "no download URL" 硬失败。voiceSlots 保持默认（plan.mjs 的 VOICE_BATTLE_SLOTS，即实战可播的槽位）。
+    charword: indexes.charword, voiceLang: 'cn',
     extraEnemyIds: Object.keys(dataEnemies || {}),
     extraTokenIds: Object.keys(dataTokens || {}),
     extraHandbook,

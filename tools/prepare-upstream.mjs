@@ -2,8 +2,8 @@
 // 构建前的最少上游输入准备：只抓 Android 打包真正需要的上游产物，不跑 tools/fetch-assets.mjs
 // （那会下载约 250 MB 游戏素材，而素材不进 APK）。
 //
-//   1. .cache/gamedata/excel/audio_data.json + .cache/ark-models/models_data.json
-//      （build-asset-index.mjs 以 offline:true 读取，缺失会直接失败）
+//   1. .cache/gamedata/excel/audio_data.json + charword_table.json + .cache/ark-models/models_data.json
+//      （build-asset-index.mjs 以 offline:true 读取，缺失会直接失败；charword_table.json 用于动作语音的 URL 计划）
 //   2. public/fonts 的 3 个字体文件 + 由 buildFonts() 生成的 .woff2 / fonts.css
 //      （syncStrongholdFonts 需要其中两个 .otf；fonts.css 供游戏页面使用）
 //
