@@ -25,7 +25,7 @@ permissions:
   contents: write
 
 env:
-  UPSTREAM_REPO: https://github.com/linxiks/Stronghold-Protocol.git
+  UPSTREAM_REPO: https://github.com/sganggs/Stronghold-Protocol.git
   UPSTREAM_REF_DEFAULT: 8cd6491e435f0a0355077b6162d1b17b77baa19e
 
 jobs:
