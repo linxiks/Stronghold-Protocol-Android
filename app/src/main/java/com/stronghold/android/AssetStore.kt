@@ -18,7 +18,10 @@ internal data class LedgerEntry(val url: String, val etag: String?, val bytes: L
 internal data class CheckResult(
     val checkedAt: Long,
     val origin: AssetOrigin,
+    /** 已安装、但源上内容已变化的文件。 */
     val changed: List<String>,
+    /** index 里有、本机却拿不出副本的文件（新增资源，或文件被清理过）。 */
+    val added: List<String>,
     val removed: Int,
     val failed: Int,
     val unknown: Int,
@@ -60,10 +63,12 @@ internal class AssetStore(context: Context) {
         return try {
             val o = JSONObject(raw)
             val changed = o.getJSONArray("changed")
+            val added = o.optJSONArray("added")
             CheckResult(
                 checkedAt = o.getLong("checkedAt"),
                 origin = AssetOrigin.valueOf(o.getString("origin")),
                 changed = List(changed.length()) { changed.getString(it) },
+                added = if (added == null) emptyList() else List(added.length()) { added.getString(it) },
                 removed = o.getInt("removed"),
                 failed = o.getInt("failed"),
                 unknown = o.getInt("unknown"),
@@ -84,6 +89,7 @@ internal class AssetStore(context: Context) {
             .put("checkedAt", result.checkedAt)
             .put("origin", result.origin.name)
             .put("changed", JSONArray(result.changed))
+            .put("added", JSONArray(result.added))
             .put("removed", result.removed)
             .put("failed", result.failed)
             .put("unknown", result.unknown)

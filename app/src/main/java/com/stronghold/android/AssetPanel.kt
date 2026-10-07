@@ -342,13 +342,19 @@ internal class AssetPanel(
         setEnabled(downloadButton, true)
 
         val changed = check?.changed.orEmpty()
-        if (origin == AssetOrigin.DOWNLOAD && changed.isNotEmpty()) {
-            checkButton.text = "更新 ${changed.size} 个"
+        val added = check?.added.orEmpty()
+        val pending = changed + added
+        if (origin == AssetOrigin.DOWNLOAD && pending.isNotEmpty()) {
+            checkButton.text = "更新 ${pending.size} 个"
             checkAction = {
+                val parts = buildList {
+                    if (changed.isNotEmpty()) add("${changed.size} 个有更新")
+                    if (added.isNotEmpty()) add("${added.size} 个尚未安装")
+                }.joinToString("，")
                 confirm(
                     "更新资源",
-                    "将重新下载 ${changed.size} 个有更新的文件，并覆盖本地的旧版本。",
-                    "更新", { if (!AssetTasks.startUpdate(activity, changed)) toast("已有任务在进行") },
+                    "将下载 ${pending.size} 个文件（$parts），其余已是最新的不动。",
+                    "更新", { if (!AssetTasks.startUpdate(activity, pending)) toast("已有任务在进行") },
                 )
             }
         } else {
@@ -378,7 +384,7 @@ internal class AssetPanel(
                 val now = System.currentTimeMillis()
                 text.append('\n').append(check.summaryText()).append(" · 检查于 ")
                     .append(DateUtils.getRelativeTimeSpanString(check.checkedAt, now, DateUtils.MINUTE_IN_MILLIS))
-                if (origin == AssetOrigin.IMPORT && check.changed.isNotEmpty()) text.append("；资源包无法局部更新，可改用下载")
+                if (origin == AssetOrigin.IMPORT && (check.changed.isNotEmpty() || check.added.isNotEmpty())) text.append("；资源包无法局部更新，可改用下载")
             }
         }
         statusText.text = text

@@ -45,9 +45,10 @@ internal sealed interface TaskState {
 
 /** 检查结论文字："已是最新"，或用 "，" 连接的非零项。 */
 internal fun CheckResult.summaryText(): String {
-    if (changed.isEmpty() && removed == 0 && failed == 0) return "已是最新"
+    if (changed.isEmpty() && added.isEmpty() && removed == 0 && failed == 0) return "已是最新"
     return buildList {
         if (changed.isNotEmpty()) add("有 ${changed.size} 个文件更新")
+        if (added.isNotEmpty()) add("${added.size} 个文件尚未安装")
         if (removed > 0) add("$removed 个文件在源上已移除")
         if (failed > 0) add("$failed 个文件无法检查（网络）")
     }.joinToString("，")
@@ -133,7 +134,12 @@ internal object AssetTasks {
             val result = downloadAll(TaskKind.UPDATE, store, store.readLedger(), targets)
             normalizeAtlases(store.filesRoot, index)
             store.lastCheck()?.let { check ->
-                store.saveCheck(check.copy(changed = check.changed.filterNot(result.succeeded::contains)))
+                store.saveCheck(
+                    check.copy(
+                        changed = check.changed.filterNot(result.succeeded::contains),
+                        added = check.added.filterNot(result.succeeded::contains),
+                    ),
+                )
             }
             when {
                 cancelled.get() -> TaskState.Finished(TaskKind.UPDATE, false, "已取消，已下载的文件会保留")
@@ -149,11 +155,20 @@ internal object AssetTasks {
             val store = AssetStore(app)
             val index = AssetIndex.get(app)
             val origin = store.origin() ?: return@start TaskState.Finished(TaskKind.CHECK, false, "尚未安装游戏资源")
+            val added = ArrayList<String>()
             val items = when (origin) {
                 AssetOrigin.DOWNLOAD -> {
                     val ledger = store.readLedger()
+                    val root = store.filesRoot
                     index.files.mapNotNull { file ->
-                        val entry = ledger[file.rel] ?: return@mapNotNull null
+                        val entry = ledger[file.rel]
+                        val target = File(root, file.rel)
+                        // 本机拿不出副本（上游新增，或文件被清理过）：没有可比的基线，不参与 ETag 比对，
+                        // 直接判为待下载 —— 「检查更新」因此也能发现尚未安装的新资源。
+                        if (entry == null || !target.isFile || target.length() == 0L) {
+                            added += file.rel
+                            return@mapNotNull null
+                        }
                         CheckItem(file.rel, listOfNotNull(entry.url, mirrorUrl(entry.url)), entry.etag, entry.bytes)
                     }
                 }
@@ -163,7 +178,10 @@ internal object AssetTasks {
                     source.use { zip ->
                         index.files.mapNotNull { file ->
                             val size = zip.size(file.rel)
-                            if (size <= 0) return@mapNotNull null
+                            if (size <= 0) {
+                                added += file.rel
+                                return@mapNotNull null
+                            }
                             // atlas 在资源包中是改写后的版本，只能和上游账本记录的原始大小比较。
                             val expected = if (file.kind == AssetKind.ATLAS) file.bytes else size
                             CheckItem(file.rel, file.urls.flatMap { listOfNotNull(it, mirrorUrl(it)) }, null, expected)
@@ -171,7 +189,7 @@ internal object AssetTasks {
                     }
                 }
             }
-            checkAll(origin, items, store)
+            checkAll(origin, items, added, store)
         }
     }
 
@@ -506,7 +524,7 @@ internal object AssetTasks {
 
     private enum class Verdict { UNCHANGED, CHANGED, REMOVED, FAILED, UNKNOWN }
 
-    private fun checkAll(origin: AssetOrigin, items: List<CheckItem>, store: AssetStore): TaskState.Finished {
+    private fun checkAll(origin: AssetOrigin, items: List<CheckItem>, added: List<String>, store: AssetStore): TaskState.Finished {
         val progress = Progress(TaskKind.CHECK, items.size)
         val changed = ArrayList<String>()
         val removed = AtomicInteger()
@@ -529,6 +547,7 @@ internal object AssetTasks {
             checkedAt = System.currentTimeMillis(),
             origin = origin,
             changed = changed.sorted(),
+            added = added.sorted(),
             removed = removed.get(),
             failed = progress.failed.get(),
             unknown = unknown.get(),
