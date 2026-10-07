@@ -41,6 +41,29 @@ internal class DirectoryAssetSource(private val root: File) : AssetSource {
     override fun close() = Unit
 }
 
+/**
+ * 两个来源叠加：[primary]（下载目录）优先，缺失时回落到 [overlay]（导入的资源包）。
+ * 下载过的文件因此盖住资源包里的同名文件，资源包仍是其余文件的来源——两者的差别只体现在
+ * 「谁先被查到」，对上层不存在"在线模式 / 资源包模式"之分。
+ */
+internal class OverlayAssetSource(
+    private val primary: AssetSource,
+    private val overlay: AssetSource?,
+) : AssetSource {
+
+    override fun open(rel: String): InputStream? = primary.open(rel) ?: overlay?.open(rel)
+
+    override fun size(rel: String): Long {
+        val size = primary.size(rel)
+        return if (size > 0) size else overlay?.size(rel) ?: -1
+    }
+
+    override fun close() {
+        primary.close()
+        overlay?.close()
+    }
+}
+
 /** message 直接显示给用户。 */
 internal class AssetPackException(message: String) : IOException(message)
 

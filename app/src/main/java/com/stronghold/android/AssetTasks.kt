@@ -109,9 +109,14 @@ internal object AssetTasks {
         return start(TaskKind.DOWNLOAD) {
             val store = AssetStore(app)
             val index = AssetIndex.get(app)
-            store.useDownload()
             val ledger = store.readLedger()
-            val targets = if (force) index.files else index.files.filter { needsDownload(store.filesRoot, it, ledger) }
+            // 资源包里的副本同样算"已有"：导入过的那部分不会再下一遍。
+            val pack = store.importSource()
+            val targets = try {
+                if (force) index.files else index.files.filter { needsDownload(store.filesRoot, it, ledger, pack) }
+            } finally {
+                pack?.close()
+            }
             insufficientSpace(app, TaskKind.DOWNLOAD, targets)?.let { return@start it }
             val result = downloadAll(TaskKind.DOWNLOAD, store, ledger, targets)
             normalizeAtlases(store.filesRoot, index)
@@ -154,43 +159,53 @@ internal object AssetTasks {
         return start(TaskKind.CHECK) {
             val store = AssetStore(app)
             val index = AssetIndex.get(app)
-            val origin = store.origin() ?: return@start TaskState.Finished(TaskKind.CHECK, false, "尚未安装游戏资源")
+            if (!store.hasAssets()) return@start TaskState.Finished(TaskKind.CHECK, false, "尚未安装游戏资源")
+            val ledger = store.readLedger()
+            val root = store.filesRoot
             val added = ArrayList<String>()
-            val items = when (origin) {
-                AssetOrigin.DOWNLOAD -> {
-                    val ledger = store.readLedger()
-                    val root = store.filesRoot
-                    index.files.mapNotNull { file ->
-                        val entry = ledger[file.rel]
-                        val target = File(root, file.rel)
-                        // 本机拿不出副本（上游新增，或文件被清理过）：没有可比的基线，不参与 ETag 比对，
-                        // 直接判为待下载 —— 「检查更新」因此也能发现尚未安装的新资源。
-                        if (entry == null || !target.isFile || target.length() == 0L) {
-                            added += file.rel
-                            return@mapNotNull null
-                        }
-                        CheckItem(file.rel, listOfNotNull(entry.url, mirrorUrl(entry.url)), entry.etag, entry.bytes)
-                    }
-                }
-                AssetOrigin.IMPORT -> {
-                    val source = store.openSource() as? ZipAssetSource
-                        ?: return@start TaskState.Finished(TaskKind.CHECK, false, "无法读取已导入的资源包，请重新导入")
-                    source.use { zip ->
-                        index.files.mapNotNull { file ->
-                            val size = zip.size(file.rel)
-                            if (size <= 0) {
-                                added += file.rel
-                                return@mapNotNull null
-                            }
-                            // atlas 在资源包中是改写后的版本，只能和上游账本记录的原始大小比较。
-                            val expected = if (file.kind == AssetKind.ATLAS) file.bytes else size
-                            CheckItem(file.rel, file.urls.flatMap { listOfNotNull(it, mirrorUrl(it)) }, null, expected)
-                        }
-                    }
-                }
+            val pack = store.importSource()
+            val items = try {
+                index.files.mapNotNull { file -> checkTarget(file, root, ledger, pack, added) }
+            } finally {
+                pack?.close()
             }
-            checkAll(origin, items, added, store)
+            checkAll(items, added, store)
         }
+    }
+
+    /**
+     * 一个文件的对账基线：下载目录里的文件用账本记录（含当时用的 URL 与 ETag），资源包里的文件
+     * 只有条目大小可比；两者都没有就是「尚未安装」，不参与网络对账。
+     */
+    private fun checkTarget(
+        file: AssetFile,
+        root: File,
+        ledger: Map<String, LedgerEntry>,
+        pack: AssetSource?,
+        added: MutableList<String>,
+    ): CheckItem? {
+        val entry = ledger[file.rel]
+        val local = File(root, file.rel).let { if (it.isFile) it.length() else 0L }
+        val packed = if (local > 0L) 0L else pack?.size(file.rel) ?: -1L
+        if (local <= 0L && packed <= 0L) {
+            // 本机拿不出副本（上游新增，或文件被清理过）：没有可比的基线，直接判为待下载 ——
+            // 「检查更新」因此也能发现尚未安装的新资源。
+            added += file.rel
+            return null
+        }
+        val sources = if (entry != null) {
+            listOfNotNull(entry.url, mirrorUrl(entry.url))
+        } else {
+            file.urls.flatMap { listOfNotNull(it, mirrorUrl(it)) }
+        }
+        val expected = when {
+            entry != null -> entry.bytes
+            // atlas 在资源包里是改写后的版本，只能和上游记录的原始大小比较。
+            file.kind == AssetKind.ATLAS -> file.bytes
+            local > 0L -> local
+            else -> packed
+        }
+        return CheckItem(file.rel, sources, entry?.etag, expected)
     }
 
     /**
@@ -203,11 +218,8 @@ internal object AssetTasks {
         return start(TaskKind.EXPORT) {
             val store = AssetStore(app)
             val index = AssetIndex.get(app)
-            val origin = store.origin() ?: return@start TaskState.Finished(TaskKind.EXPORT, false, "尚未安装游戏资源")
-            val source = store.openSource() ?: return@start TaskState.Finished(
-                TaskKind.EXPORT, false,
-                if (origin == AssetOrigin.IMPORT) "无法读取已导入的资源包，请重新导入" else "尚未下载游戏资源",
-            )
+            val source = store.openSource()
+                ?: return@start TaskState.Finished(TaskKind.EXPORT, false, "尚未安装游戏资源")
             source.use { exportFrom(app, index, it) }
         }
     }
@@ -358,11 +370,16 @@ internal object AssetTasks {
 
     private class DownloadResult(val succeeded: Set<String>, val failed: Int)
 
-    /** 已有文件能否保留：账本有记录，且大小与记录一致（atlas 改写后大小会变，改为校验内容）。 */
-    private fun needsDownload(root: File, file: AssetFile, ledger: Map<String, LedgerEntry>): Boolean {
+    /**
+     * 该文件是否需要下载：下载目录里有与账本一致的副本就不用；否则资源包里的副本也算数
+     * （导入过的文件不必重下）。atlas 改写后大小会变，改为校验内容。
+     */
+    private fun needsDownload(root: File, file: AssetFile, ledger: Map<String, LedgerEntry>, pack: AssetSource?): Boolean {
         val target = File(root, file.rel)
         val length = target.length()
-        if (!target.isFile || length == 0L) return true
+        if (!target.isFile || length == 0L) {
+            return (pack?.size(file.rel) ?: -1L) <= 0L
+        }
         val entry = ledger[file.rel] ?: return true
         if (entry.bytes == length) return false
         return !(file.kind == AssetKind.ATLAS && isValidPayload(AssetKind.ATLAS, target.readBytes()))
@@ -524,7 +541,7 @@ internal object AssetTasks {
 
     private enum class Verdict { UNCHANGED, CHANGED, REMOVED, FAILED, UNKNOWN }
 
-    private fun checkAll(origin: AssetOrigin, items: List<CheckItem>, added: List<String>, store: AssetStore): TaskState.Finished {
+    private fun checkAll(items: List<CheckItem>, added: List<String>, store: AssetStore): TaskState.Finished {
         val progress = Progress(TaskKind.CHECK, items.size)
         val changed = ArrayList<String>()
         val removed = AtomicInteger()
@@ -545,7 +562,6 @@ internal object AssetTasks {
         if (cancelled.get()) return TaskState.Finished(TaskKind.CHECK, false, "已取消检查")
         val result = CheckResult(
             checkedAt = System.currentTimeMillis(),
-            origin = origin,
             changed = changed.sorted(),
             added = added.sorted(),
             removed = removed.get(),

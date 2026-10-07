@@ -26,8 +26,9 @@ import android.widget.Toast
 import kotlin.concurrent.thread
 
 /**
- * 连接页左栏的"游戏资源"区块：在线下载 / 继续下载 / 重新下载、导入资源包、检查更新与局部更新、导出资源包。
- * 会覆盖已有资源的操作（重新下载、更新、导入替换下载、下载替换导入）都先弹窗确认。
+ * 连接页左栏的"游戏资源"区块：下载 / 继续下载 / 重新下载、导入资源包、检查更新与局部更新、导出资源包。
+ * 导入的资源包与已下载的文件同等视为本地已有内容，下载只补缺失的部分。
+ * 会覆盖已有资源的操作（重新下载、导入后删除已下载的文件）都先弹窗确认。
  */
 internal class AssetPanel(
     private val activity: Activity,
@@ -109,13 +110,10 @@ internal class AssetPanel(
     // ---- 导出 ----
 
     private fun exportAction() {
-        val what = when (store.origin()) {
-            AssetOrigin.IMPORT -> "已导入资源包「${store.importInfo()?.name ?: "资源包"}」中的全部 $total 个文件"
-            else -> "已下载的全部 $total 个文件（约 ${formatMb(summary?.bytes ?: 0L)}）"
-        }
         confirm(
             "导出资源包",
-            "将把$what 打包为 zip，保存到手机的「下载」目录。导出的文件可以通过「导入资源包」在本机或其他设备上使用。",
+            "将把已下载的全部 $total 个文件（约 ${formatMb(summary?.bytes ?: 0L)}）打包为 zip，" +
+                "保存到手机的「下载」目录。导出的文件可以通过「导入资源包」在本机或其他设备上使用。",
             "导出", ::startExport,
         )
     }
@@ -162,7 +160,11 @@ internal class AssetPanel(
                 if (count == 0) {
                     ImportOutcome.Failed(NO_ASSETS_IN_PACK)
                 } else {
-                    ImportOutcome.Ready(ImportInfo(uri, name, size, count), store.summary(index), index.files.size)
+                    ImportOutcome.Ready(
+                        ImportInfo(uri, name, size, count),
+                        store.summary(index, includeImportPack = false),
+                        index.files.size,
+                    )
                 }
             } catch (e: AssetPackException) {
                 ImportOutcome.Failed(e.message ?: NO_ASSETS_IN_PACK)
@@ -200,12 +202,13 @@ internal class AssetPanel(
                 val files = "${info.count}/${outcome.total}"
                 val apply = { applyImport(info) }
                 when {
-                    store.origin() == AssetOrigin.DOWNLOAD && outcome.summary.present > 0 -> confirm(
+                    outcome.summary.present > 0 -> confirm(
                         "导入资源包",
-                        "资源包「${info.name}」包含 $files 个文件。导入后将删除已下载的资源（${formatMb(outcome.summary.bytes)}），改为直接读取该资源包。",
+                        "资源包「${info.name}」包含 $files 个文件。导入后将删除已下载的 " +
+                            "${outcome.summary.present} 个文件（${formatMb(outcome.summary.bytes)}）。",
                         "导入", apply, releaseIfUnused,
                     )
-                    store.origin() == AssetOrigin.IMPORT && current != null && current.uri != uri -> confirm(
+                    current != null && current.uri != uri -> confirm(
                         "替换资源包",
                         "将改用资源包「${info.name}」（$files 个文件），不再使用「${current.name}」。",
                         "替换", apply, releaseIfUnused,
@@ -311,40 +314,32 @@ internal class AssetPanel(
             return
         }
 
-        val origin = store.origin()
-        val importInfo = store.importInfo()
         val check = store.lastCheck()
-        val complete = origin == AssetOrigin.DOWNLOAD && summary.present == total
+        val complete = total > 0 && summary.present == total
 
         downloadButton.text = when {
             complete -> "重新下载"
-            origin == AssetOrigin.DOWNLOAD && summary.present > 0 -> "继续下载"
+            summary.present > 0 -> "继续下载"
             else -> "下载"
         }
-        downloadAction = when {
-            origin == AssetOrigin.IMPORT -> ({
-                confirm(
-                    "改用在线下载",
-                    "将停止使用已导入的资源包「${importInfo?.name ?: "资源包"}」，改为从原项目地址下载约 ${formatMb(totalBytes)}。资源包文件本身不会被删除。",
-                    "下载", { startDownload(force = false) },
-                )
-            })
-            complete -> ({
+        downloadAction = if (complete) {
+            {
                 confirm(
                     "重新下载全部资源",
                     "将从原项目地址重新下载全部 $total 个文件（约 ${formatMb(totalBytes)}），并覆盖已下载的文件。",
                     "重新下载", { startDownload(force = true) },
                 )
-            })
-            // 首次下载和继续下载只补缺失的文件，不覆盖已有资源。
-            else -> ({ startDownload(force = false) })
+            }
+        } else {
+            // 首次下载、继续下载都只补缺失的文件：资源包里已有的部分不会再下一遍。
+            { startDownload(force = false) }
         }
         setEnabled(downloadButton, true)
 
         val changed = check?.changed.orEmpty()
         val added = check?.added.orEmpty()
         val pending = changed + added
-        if (origin == AssetOrigin.DOWNLOAD && pending.isNotEmpty()) {
+        if (pending.isNotEmpty()) {
             checkButton.text = "更新 ${pending.size} 个"
             checkAction = {
                 val parts = buildList {
@@ -361,14 +356,14 @@ internal class AssetPanel(
             checkButton.text = "检查更新"
             checkAction = { if (!AssetTasks.startCheck(activity)) toast("已有任务在进行") }
         }
-        setEnabled(checkButton, origin == AssetOrigin.IMPORT || (origin == AssetOrigin.DOWNLOAD && summary.present > 0))
-        // 只导出完整的资源：在线下载已全部完成，或导入的资源包包含全部文件（导入包之后可能被用户删掉，导出一份可留作备份）。
-        setEnabled(exportButton, complete || (origin == AssetOrigin.IMPORT && importInfo?.count == total))
+        setEnabled(checkButton, summary.present > 0)
+        // 只导出完整的资源：资源包之后可能被用户删掉，导出一份可留作备份。
+        setEnabled(exportButton, complete)
 
-        val firstLine = when (origin) {
-            null -> "未安装 · 本地模式会显示占位画面"
-            AssetOrigin.DOWNLOAD -> "已下载 ${summary.present}/$total 个文件 · ${formatMb(summary.bytes)}"
-            AssetOrigin.IMPORT -> "已导入 ${importInfo?.name ?: "资源包"} · ${importInfo?.count ?: 0}/$total 个文件"
+        val firstLine = if (summary.present > 0) {
+            "已下载 ${summary.present}/$total 个文件 · ${formatMb(summary.bytes)}"
+        } else {
+            "未安装 · 本地模式会显示占位画面"
         }
         val text = SpannableStringBuilder(firstLine)
         when {
@@ -384,7 +379,6 @@ internal class AssetPanel(
                 val now = System.currentTimeMillis()
                 text.append('\n').append(check.summaryText()).append(" · 检查于 ")
                     .append(DateUtils.getRelativeTimeSpanString(check.checkedAt, now, DateUtils.MINUTE_IN_MILLIS))
-                if (origin == AssetOrigin.IMPORT && (check.changed.isNotEmpty() || check.added.isNotEmpty())) text.append("；资源包无法局部更新，可改用下载")
             }
         }
         statusText.text = text
