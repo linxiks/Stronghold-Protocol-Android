@@ -15,6 +15,12 @@
 // Content-Length and corrected where it differs. Ledger/plan values survive only as the fallback for URLs that do not
 // answer; a file that has neither and does not answer keeps `bytes` undefined.
 //
+// Missing URLs: every /assets/<rel> the manifest references should end up in `files`. Two offline gaps used to open up
+// and are closed here — the plan inputs v0.2.0 added (dataExtras / localTokenSpines, see the buildPlan call) and the
+// extra Spine atlas pages the model index does not list (see addExtraAtlasPages). Whatever still has no URL is reported
+// and written to the index's `missing` field, left out of `files` so the client falls back to the network for that
+// path; STRONGHOLD_ASSET_INDEX_STRICT=1 turns it back into a hard failure for local runs.
+//
 // Usage: node tools/build-asset-index.mjs <upstreamRoot> <outFile>
 // Output: {"version":1,"manifestHash":…,"files":[{"rel","urls","kind","bytes"?,"pma"?}]}
 
@@ -30,8 +36,16 @@ async function main(argv) {
   const root = resolve(argv[0]);
   const out = resolve(argv[1]);
   const load = (name) => import(pathToFileURL(join(root, 'tools/assets', `${name}.mjs`)).href);
-  const [{ buildPlan }, { collectLeaves }, { loadIndexes }, { indexAudio }, { loadLocalEnemySpines, LOCAL_ENEMY_SPINES_FILE }, { kindOf }, { mirrorUrl }] =
-    await Promise.all(['plan', 'manifest', 'cache', 'audio', 'spine', 'formats', 'sources'].map(load));
+  const [planM, manifestM, cacheM, audioM, spineM, formatsM, sourcesM, atlasM, fetchM] = await Promise.all([
+    ...['plan', 'manifest', 'cache', 'audio', 'spine', 'formats', 'sources', 'atlas'].map(load),
+    // dataExtras 住在 fetch-assets.mjs（它只在被当作脚本运行时才执行 main），补位与自选编队的干员、
+    // 召唤物和模组图标都由它给出，直接复用以免把那段规则复制一份。
+    import(pathToFileURL(join(root, 'tools/fetch-assets.mjs')).href),
+  ]);
+  const [{ buildPlan }, { collectLeaves }, { loadIndexes }, { indexAudio }, { loadLocalSpines, LOCAL_ENEMY_SPINES_FILE, LOCAL_TOKEN_SPINES_FILE }, { kindOf }, { mirrorUrl, safeName, urlDir }] =
+    [planM, manifestM, cacheM, audioM, spineM, formatsM, sourcesM];
+  const { atlasInfo } = atlasM;
+  const { dataExtras } = fetchM;
   const readJson = async (rel) => JSON.parse(await readFile(join(root, rel), 'utf8'));
 
   // Same plan inputs as upstream tools/fetch-assets.mjs main().
@@ -48,22 +62,33 @@ async function main(argv) {
     throw new Error(`${e?.message || e} — run "node tools/setup.mjs" in Stronghold-Protocol first`);
   }
   const audio = indexAudio(indexes.audioData);
-  const [dataEnemies, dataTokens, dataBosses] = await Promise.all(
-    ['data/enemies.json', 'data/tokens.json', 'data/bosses.json'].map((f) => readJson(f).catch(() => null)));
+  const [dataEnemies, dataTokens, dataBosses, dataBackups, dataChess] = await Promise.all(
+    ['data/enemies.json', 'data/tokens.json', 'data/bosses.json', 'data/backups.json', 'data/chess.json']
+      .map((f) => readJson(f).catch(() => null)));
   const extraHandbook = {};
   for (const b of Object.values(dataBosses || {})) if (b?.enemyKey && typeof b.handbookId === 'string') extraHandbook[b.enemyKey] = b.handbookId;
-  const localEnemySpines = await loadLocalEnemySpines(join(root, LOCAL_ENEMY_SPINES_FILE));
+  // 补位与自选编队（v0.2.0）把自己的干员、召唤物和模组图标带进计划；与上游 fetch-assets.mjs 读同一份数据。
+  const extras = dataExtras(dataBackups, dataChess);
+  const localEnemySpines = await loadLocalSpines(join(root, LOCAL_ENEMY_SPINES_FILE));
+  const localTokenSpines = await loadLocalSpines(join(root, LOCAL_TOKEN_SPINES_FILE));
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData: indexes.modelsData,
     // 上游 fetch-assets.mjs main() 同样传 charword + voiceLang：manifest 自 v0.1.2 起引用动作语音
-    // (audio/voice/**)，不传这两个参数时 plan 里没有 voice 的 URL，下面的 walk 会以
-    // "no download URL" 硬失败。voiceSlots 保持默认（plan.mjs 的 VOICE_BATTLE_SLOTS，即实战可播的槽位）。
+    // (audio/voice/**)，不传这两个参数时 plan 里没有 voice 的 URL，这些文件会落进下面的 missing
+    // 而从下载列表消失。voiceSlots 保持默认（plan.mjs 的 VOICE_BATTLE_SLOTS，即实战可播的槽位）。
     charword: indexes.charword, voiceLang: 'cn',
     extraEnemyIds: Object.keys(dataEnemies || {}),
-    extraTokenIds: Object.keys(dataTokens || {}),
+    extraTokenIds: [...Object.keys(dataTokens || {}), ...extras.tokenIds],
     extraHandbook,
     localEnemySpines,
+    localTokenSpines,
+    extraOperators: extras.extraOperators,
+    moduleTypes: extras.moduleTypes,
   });
+
+  // 上游 fetch-assets.mjs 的 processModels 在下载 atlas 之后才发现它引用的额外纹理页（索引通常只列第一页），
+  // 这里用同一规则自己读一遍这些 atlas 文本，否则第二页起（例如 char_1052_kalts22.png）拿不到下载 URL。
+  await addExtraAtlasPages(plan.models, { kindOf, safeName, urlDir, atlasInfo, mirrorUrl });
 
   /** rel → { urls: string[], bytes?: number } */
   const planned = new Map();
@@ -106,15 +131,81 @@ async function main(argv) {
     if (file.kind === 'atlas' && pma.get(rel) === true) file.pma = true;
     files.push(file);
   }
-  if (missing.length) throw new Error(`no download URL for: ${missing.slice(0, 10).join(', ')}`);
+  // 正常情况下这里是空的：plan 入参对齐上游、atlas 增补页都做完之后，manifest 引用的每个文件都该有 URL。
+  // 出现缺口只有两个来由 —— plan 输入没跟上上游版本（见上面的 dataExtras/localTokenSpines），或者 atlas 里
+  // 列了模型索引没有的页（见 addExtraAtlasPages）。剩下的写进索引的 missing 字段并排除出下载列表
+  // （客户端请求这些路径时回源），STRONGHOLD_ASSET_INDEX_STRICT=1 可在本地把这类情况变回硬失败。
+  if (missing.length) {
+    const head = missing.slice(0, 10).join(', ');
+    const rest = missing.length > 10 ? ` … (+${missing.length - 10})` : '';
+    console.warn(`[asset-index] ${missing.length} 个文件没有下载 URL（已从下载列表排除，客户端回源）: ${head}${rest}`);
+    if (process.env.STRONGHOLD_ASSET_INDEX_STRICT === '1') {
+      throw new Error(`no download URL for: ${missing.slice(0, 10).join(', ')}`);
+    }
+  }
 
   if (process.env.STRONGHOLD_VERIFY_ASSET_SIZES === '1') await verifySizes(files, mirrorUrl);
   const totalBytes = files.reduce((sum, f) => sum + (f.bytes || 0), 0);
 
   await mkdir(dirname(out), { recursive: true });
-  await writeFile(`${out}.tmp`, JSON.stringify({ version: 1, manifestHash: manifest.hash, files }));
+  await writeFile(`${out}.tmp`, JSON.stringify({ version: 1, manifestHash: manifest.hash, files, missing }));
   await rename(`${out}.tmp`, out);
   console.log(`[asset-index] ${files.length} files, ${totalBytes} bytes → ${out}`);
+}
+
+/**
+ * 上游 fetch-assets.mjs 的 processModels 在下载 atlas 之后，把 atlas 里列出、而索引（models_data）没有的
+ * 额外页补进模型 —— `char_1052_kalts22.png` 就是这么来的，索引只列了 `char_1052_kalts2.png`。
+ * 这里离线做同一件事：只抓 atlas 文本（每个模型一个，几十 KB），URL 目录沿用 atlas 自己的来源。
+ */
+async function addExtraAtlasPages(models, { kindOf, safeName, urlDir, atlasInfo, mirrorUrl }) {
+  const list = [...models.values()];
+  const concurrency = Math.max(1, Math.min(16, Number(process.env.STRONGHOLD_ATLAS_CONCURRENCY) || 16));
+  let next = 0;
+  let read = 0;
+  let added = 0;
+  let unreachable = 0;
+  const worker = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= list.length) return;
+      const m = list[i];
+      const text = await fetchFirstText(m.atlas?.urls || [], mirrorUrl);
+      if (text == null) {
+        unreachable++;
+        continue;
+      }
+      read++;
+      for (const page of atlasInfo(text).pages) {
+        const rel = m.dir + safeName(page);
+        if (m.pngs.some((p) => p.rel === rel)) continue;
+        const dirs = [...new Set([m.baseUrl, ...(m.atlas?.urls || []).map(urlDir)].filter(Boolean))];
+        m.pngs.push({ rel, urls: dirs.map((d) => d + encodeURIComponent(page)), kind: kindOf(page) });
+        added++;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, worker));
+  console.log(`[asset-index] atlas pages: ${read}/${list.length} atlases read, ${added} extra pages, ${unreachable} unreachable`);
+}
+
+/** 依次尝试候选 URL 与其镜像，返回第一份能读到的文本；全都失败返回 null。 */
+async function fetchFirstText(urls, mirrorUrl) {
+  for (const url of urls) {
+    for (const src of [url, mirrorUrl(url)].filter(Boolean)) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const res = await fetch(src, { signal: AbortSignal.timeout(30000) });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.text();
+        } catch {
+          if (attempt === 2) break;
+          await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /**
