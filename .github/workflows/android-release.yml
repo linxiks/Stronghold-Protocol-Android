@@ -26,7 +26,7 @@ permissions:
 
 env:
   UPSTREAM_REPO: https://github.com/sganggs/Stronghold-Protocol.git
-  UPSTREAM_REF_DEFAULT: c2a2ef778cf728ff29b953b9842b2a39b1e9cbea
+  UPSTREAM_REF_DEFAULT: 1db8e51023ae6abaec9370beb81a513d5c4d0b01
 
 jobs:
   release:
