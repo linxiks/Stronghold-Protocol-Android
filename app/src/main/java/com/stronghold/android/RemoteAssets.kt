@@ -13,12 +13,19 @@ import java.net.URL
 private val AUDIO_EXTS = listOf(".mp3", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wav")
 
 /**
- * 外部服务器模式下，判断能不能把 `/assets/…` 交给本机已有的资源。
+ * v0.2.6 `shared/assetPaths.js` 的内容哈希首段：`~` + 16 位小写 hex（URL 首段，不是查询串）。
+ * 服务端只在交出的清单里加它（`server/http/assetViews.js`），磁盘上的 `data/assets.json` 不变。
+ */
+private val HASH_SEGMENT = Regex("^~[0-9a-f]{16}/")
+
+/**
+ * 外部服务器模式下，判断能不能把 `/assets/…`、`/media/…` 交给本机已有的资源。
  *
- * 上游对资源没有内容寻址（`public/assets/` 不进仓库、由每台机器自己下载，ETag 是 size+mtime，
+ * 上游的素材本身没有内容寻址（`public/assets/` 不进仓库、由每台机器自己下载，ETag 是 size+mtime，
  * `/healthz` 的 build 标签不含 assets），唯一能表示"这份资源是哪一版"的是 `data/assets.json`
  * 顶层的清单 hash —— 它只摘要 URL 集合、不含文件字节，所以一致意味着同名文件来自同一版清单，
- * 而不是字节级相同。
+ * 而不是字节级相同。v0.2.6 起服务端交出的清单给每个素材 URL 首段插了一段内容哈希，
+ * 但顶层那个 hash 原样保留（改写只动 URL 字符串），所以判据不变。
  */
 internal object RemoteAssets {
     private const val TAG = "Stronghold"
@@ -47,18 +54,21 @@ internal object RemoteAssets {
     }
 
     /**
-     * 把页面请求的路径还原成索引里的 rel：`/assets/<rel>` 直接对应；音频另有一条扩展名省略的
-     * `/media/<rest>`，按 [AUDIO_EXTS] 逐个试本机有没有。两者都不成立、或本机没有该文件时返回 null
+     * 把页面请求的路径还原成索引里的 rel：`/assets/[~<hash>/]<rel>` 直接对应；音频另有一条扩展名省略的
+     * `/media/[~<hash>/]<rest>`，按 [AUDIO_EXTS] 逐个试本机有没有。两者都不成立、或本机没有该文件时返回 null
      * （调用方放行，交回网络）。
      */
     fun relFor(path: String, source: AssetSource): String? {
-        path.removePrefix("/assets/")
-            .takeIf { it != path && isSafeAssetRel(it) }
+        stripHash(path.removePrefix("/assets/").takeIf { it != path })
+            ?.takeIf { isSafeAssetRel(it) }
             ?.let { return it }
-        val media = path.removePrefix("/media/").takeIf { it != path && it.isNotEmpty() } ?: return null
+        val media = stripHash(path.removePrefix("/media/").takeIf { it != path && it.isNotEmpty() }) ?: return null
         if (!isSafeAssetRel(media)) return null
         return AUDIO_EXTS.firstNotNullOfOrNull { ext ->
             "audio/$media$ext".takeIf { isSafeAssetRel(it) && source.size(it) > 0 }
         }
     }
+
+    /** 去掉 URL 首段的内容哈希；没有该段时原样返回。 */
+    private fun stripHash(rel: String?): String? = rel?.replaceFirst(HASH_SEGMENT, "")
 }
