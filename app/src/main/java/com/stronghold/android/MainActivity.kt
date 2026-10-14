@@ -121,6 +121,8 @@ class MainActivity : Activity() {
         thread(name = "Stronghold-Bootstrap") {
             try {
                 val root = StrongholdInstaller.install(applicationContext)
+                // 留存过美术包时把它补进（刚装好或 APK 更新后重建的）运行时目录，见 LocalArt。
+                LocalArt.ensureInstalled(applicationContext, root)
                 Log.i(TAG, "Runtime ready: ${root.absolutePath}")
                 NodeManager.startStronghold(root)
                 // 先就位资源来源再加载页面：runOnUiThread 按顺序执行，一定早于下面的 loadUrl。

@@ -9,6 +9,21 @@ val strongholdSource = rootProject.file("../Stronghold-Protocol")
 val strongholdNodeModules = strongholdSource.resolve("node_modules")
 val strongholdNodeLock = strongholdNodeModules.resolve(".package-lock.json")
 
+// 本地美术包（3D 棋盘与战场场景）与本仓库的上游版本同名，见 LocalArt.kt。上游 clone 缺席时给个占位版本：
+// 构建本身会在 packageStrongholdRuntime 里报错，这里不该先抛。
+val strongholdVersion: String by lazy {
+    val manifest = strongholdSource.resolve("package.json")
+    if (!manifest.isFile) return@lazy "0.0.0"
+    @Suppress("UNCHECKED_CAST")
+    val parsed = JsonSlurper().parse(manifest) as Map<String, Any?>
+    parsed["version"] as? String ?: "0.0.0"
+}
+// release 上美术包的地址；换仓库或换托管位置时用 -Pstronghold.localArtUrl=… 覆盖。
+val strongholdLocalArtUrl: String by lazy {
+    (findProperty("stronghold.localArtUrl") as String?)?.takeIf { it.isNotBlank() }
+        ?: "https://github.com/linxiks/Stronghold-Protocol-Android/releases/download/v$strongholdVersion/stronghold-local-art-$strongholdVersion.zip"
+}
+
 val strongholdRequiredFiles = listOf(
     "data", "public", "server", "shared", "package.json", "node_modules/.package-lock.json"
 ).map(strongholdSource::resolve)
@@ -37,6 +52,10 @@ android {
         targetSdk = 36
         versionCode = System.getenv("STRONGHOLD_VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = System.getenv("STRONGHOLD_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
+
+        // 固定的上游版本与本仓库 release 上对应的本地美术包地址（LocalArt.kt）。
+        buildConfigField("String", "UPSTREAM_VERSION", "\"$strongholdVersion\"")
+        buildConfigField("String", "LOCAL_ART_URL", "\"$strongholdLocalArtUrl\"")
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -82,6 +101,11 @@ android {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
+    }
+
+    buildFeatures {
+        // UPSTREAM_VERSION / LOCAL_ART_URL（LocalArt.kt）。
+        buildConfig = true
     }
 }
 

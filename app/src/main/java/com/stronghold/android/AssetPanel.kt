@@ -41,15 +41,19 @@ internal class AssetPanel(
     private lateinit var importButton: Button
     private lateinit var checkButton: Button
     private lateinit var exportButton: Button
+    private lateinit var artButton: Button
+    private lateinit var artText: TextView
 
     private var disposed = false
     private var importing = false
     private var taskState: TaskState = TaskState.Idle
+    private var artState: LocalArtState = LocalArtState.Idle
     private var summary: AssetSummary? = null
     private var total = 0
     private var totalBytes = 0L
     private var downloadAction: () -> Unit = {}
     private var checkAction: () -> Unit = {}
+    private var artAction: () -> Unit = {}
 
     private val listener: (TaskState) -> Unit = { state ->
         val previous = taskState
@@ -57,6 +61,11 @@ internal class AssetPanel(
         render()
         // 任务刚结束：文件数量变了，重新统计。
         if (state is TaskState.Finished && previous is TaskState.Running) refreshSummary()
+    }
+
+    private val artListener: (LocalArtState) -> Unit = { state ->
+        artState = state
+        render()
     }
 
     fun createView(): View {
@@ -97,7 +106,14 @@ internal class AssetPanel(
         }
         root.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, activity.dp(36)).apply { topMargin = activity.dp(8) })
 
+        artButton = actionButton { artAction() }.apply { text = "本地美术包" }
+        root.addView(artButton, LinearLayout.LayoutParams(MATCH_PARENT, activity.dp(36)).apply { topMargin = activity.dp(8) })
+
+        artText = activity.styledText("", 12f, Palette.TEXT_LO).apply { maxLines = 3 }
+        root.addView(artText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = activity.dp(6) })
+
         AssetTasks.addListener(listener)
+        LocalArt.addListener(artListener)
         refreshSummary()
         return root
     }
@@ -105,6 +121,7 @@ internal class AssetPanel(
     fun dispose() {
         disposed = true
         AssetTasks.removeListener(listener)
+        LocalArt.removeListener(artListener)
     }
 
     // ---- 导出 ----
@@ -265,12 +282,14 @@ internal class AssetPanel(
         if (disposed || !::statusText.isInitialized) return
         val state = taskState
         when {
+            artState is LocalArtState.Running -> renderArtRunning(artState as LocalArtState.Running)
             state is TaskState.Running -> renderRunning(state)
             importing -> {
                 setEnabled(downloadButton, false)
                 setEnabled(importButton, false)
                 setEnabled(checkButton, false)
                 setEnabled(exportButton, false)
+                setEnabled(artButton, false)
                 showProgress(indeterminate = true)
                 statusText.text = "正在读取资源包…"
             }
@@ -285,6 +304,7 @@ internal class AssetPanel(
         setEnabled(importButton, false)
         setEnabled(checkButton, false)
         setEnabled(exportButton, false)
+        setEnabled(artButton, false)
         if (state.total > 0) {
             showProgress(indeterminate = false)
             progress.max = state.total
@@ -303,6 +323,7 @@ internal class AssetPanel(
     }
 
     private fun renderIdle(finished: TaskState.Finished?) {
+        renderArt()
         progress.visibility = View.GONE
         setEnabled(importButton, true)
         val summary = summary
@@ -382,6 +403,94 @@ internal class AssetPanel(
             }
         }
         statusText.text = text
+    }
+
+    // ---- 本地美术包 ----
+
+    /**
+     * 本地美术包（官方 3D 棋盘与各战场场景）的按钮与状态。它不属于 [AssetTasks] 那批按索引逐文件下载的资源，
+     * 但共用同一条进度条与取消语义，两者互斥。
+     */
+    private fun renderArt() {
+        val status = LocalArt.status(activity)
+        artButton.text = when (status.phase) {
+            LocalArt.Phase.INSTALLED -> "重新下载本地美术包"
+            LocalArt.Phase.READY -> "安装本地美术包"
+            LocalArt.Phase.ABSENT -> "下载本地美术包"
+        }
+        artAction = { artConfirm(status) }
+        setEnabled(artButton, true)
+
+        val base = when (status.phase) {
+            LocalArt.Phase.INSTALLED -> "本地美术包：已安装 · ${formatMb(status.bytes)}"
+            LocalArt.Phase.READY -> "本地美术包：已下载，待安装 · ${formatMb(status.bytes)}"
+            LocalArt.Phase.ABSENT -> "本地美术包：未下载，3D 棋盘与各战场官方场景不可用"
+        }
+        val text = SpannableStringBuilder(base)
+        val finished = artState as? LocalArtState.Finished
+        if (finished != null) {
+            text.append('\n')
+            val start = text.length
+            text.append(finished.message)
+            if (!finished.success) {
+                text.setSpan(ForegroundColorSpan(Palette.DANGER), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        artText.text = text
+    }
+
+    private fun renderArtRunning(state: LocalArtState.Running) {
+        artButton.text = if (state.cancelling) "正在取消…" else "取消"
+        artAction = { LocalArt.cancel() }
+        setEnabled(artButton, !state.cancelling)
+        setEnabled(downloadButton, false)
+        setEnabled(importButton, false)
+        setEnabled(checkButton, false)
+        setEnabled(exportButton, false)
+        if (state.total > 0) {
+            showProgress(indeterminate = false)
+            progress.max = 1000
+            progress.progress = ((state.done * 1000) / state.total).toInt()
+        } else {
+            showProgress(indeterminate = true)
+        }
+        artText.text = if (state.cancelling) {
+            "本地美术包：正在取消…"
+        } else when (state.stage) {
+            LocalArtStage.DOWNLOAD -> buildString {
+                append("本地美术包：下载中 ${formatMb(state.done)}")
+                if (state.total > 0) append(" / ${formatMb(state.total)}")
+            }
+            LocalArtStage.INSTALL -> "本地美术包：安装中 ${state.done}/${state.total}"
+        }
+    }
+
+    private fun artConfirm(status: LocalArt.Status) {
+        val what = "官方 3D 棋盘（图集、tiles.json 与网格）和各战场的官方场景"
+        val message: String
+        val positive: String
+        val force: Boolean
+        when (status.phase) {
+            LocalArt.Phase.INSTALLED -> {
+                message = "将重新下载并覆盖已安装的本地美术包（$what，约 65 MB）。"
+                positive = "重新下载"
+                force = true
+            }
+            LocalArt.Phase.READY -> {
+                message = "将把已下载的本地美术包（$what）安装到本机运行时目录。"
+                positive = "安装"
+                force = false
+            }
+            LocalArt.Phase.ABSENT -> {
+                message = "将从本项目的 release 下载本地美术包（$what，约 65 MB），解到本机运行时目录。\n\n${LocalArt.url()}"
+                positive = "下载"
+                force = false
+            }
+        }
+        confirm(
+            "本地美术包", message, positive,
+            { if (!LocalArt.start(activity, force)) toast("已有任务在进行") },
+        )
     }
 
     // ---- 小工具 ----

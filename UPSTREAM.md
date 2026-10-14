@@ -15,12 +15,20 @@
 | `syncStrongholdFonts` | `public/fonts/{novecento-wide-normal,bender-regular}.otf` | `assets/fonts/*` |
 
 CI 里另跑 `tools/prepare-upstream.mjs`，负责准备 `.cache/`（音频/角色词条/模型索引）与字体（含
-`fonts.css` / `.woff2`）。**`asset-index.json` 不入库**，每次构建现生成；仓库里唯一记录上游版本的地方是
+`fonts.css` / `.woff2`），以及 `tools/fetch-local-art.mjs`，从上游 release 的**完整包**里用范围请求抠出
+本地客户端美术（见 §4）。
+
+**`asset-index.json` 不入库**，每次构建现生成；仓库里唯一记录上游版本的地方是
 `.github/workflows/android-release.yml` 的 `UPSTREAM_REF_DEFAULT`（固定 SHA）。
 
 客户端运行时的资源判定依赖 `asset-index.json` 的 `manifestHash`（= 上游 `data/assets.json` 的 `hash`）：
 外部服务器模式下它与服务器 `data/assets.json` 的 hash 不一致时，本机资源会被判定为不同版而回退网络
 （`MainActivity.kt`、`RemoteAssets.kt`）。所以每次跟进都必须让新索引与目标上游 hash 一致。
+
+同一处还有第二条手工对照关系：上游 `shared/assetPaths.js` 把页面请求的 `/assets/...` 改写成带内容哈希的
+`/assets/~<16 位 hex>/...`（并维护 `server/http/assetViews.js` 的 `VIEW_MANIFESTS`，指认哪些 JSON 里
+的路径也要改写）。外壳由 `RemoteAssets.relFor()` 逆操作——剥掉哈希段再查本机文件。上游改这两个文件的
+URL 形状时，`RemoteAssets.kt` 的 `HASH_SEGMENT` 与 `VIEW_MANIFESTS` 要同步。
 
 ## 2. 跟进流程
 
@@ -136,3 +144,27 @@ git push origin master && git push origin vX.Y.Z
 - **上游新增的启动期校验**（如 0.2.1 的 `server/update.js`）：只在安装目录存在 `UPDATE.json` 时才生效，
   runtime zip 不含它，`applyPendingUpdate` 返回 `none`，不影响 Android 启动。
 - **不要忘**：`AssetFormats.kt` 与上游 `formats/atlas/sources.mjs` 是手工对照关系，上游改这三个文件要同步。
+
+## 4. 本地美术包（3D 棋盘与各战场场景）
+
+上游把提取好的本地美术放进**完整包**（0.2.6 起约 583 MB，`packs/` 与 `public/assets/local/`），而公开镜像
+（`stronghold-bundle-*-minimal.zip`）里没有；Android 端又没法像上游 `tools/setup.mjs --scenes` 那样用
+UnityPy 现场解包，所以：
+
+1. CI 跑 `tools/fetch-local-art.mjs`，对上游 release 的完整包发范围请求，只取出
+   `public/assets/local/**` 与 `data/local-assets.json`（约 64 MB，见该脚本头部的条目清单）。
+2. 打成本仓库 release 的 `stronghold-local-art-<上游版本>.zip`，与 APK 同版本同 tag 发布。
+3. app 在资源页「本地美术包」按钮下载（`LocalArt.kt`；地址经 `BuildConfig.LOCAL_ART_URL` 注入，可用
+   `-Pstronghold.localArtUrl=…` 覆盖），解到运行时目录 `filesDir/stronghold` 的 `public/assets/local/**` 与
+   `data/local-assets.json`；zip 留一份，APK 更新重建运行时目录后由 `LocalArt.ensureInstalled()` 自动重装。
+
+不装也**不算故障**：上游内置的 node 服务把缺失的 `data/local-assets.json` 直接当空清单应答
+（`server/http/static.js`），客户端按既有回退渲染（3D 棋盘退回 2D 棋盘、战场退回金属地块）。
+
+跟进时注意：
+
+- **上游改了本地素材路径或清单名**（`public/assets/local/`、`data/local-assets.json`）→ 同步
+  `tools/fetch-local-art.mjs` 的条目清单与 `LocalArt.kt` 的 `MANIFEST` / `ART_PREFIX`。
+- **上游改了完整包文件名**（`Stronghold-Protocol-v<版本>.zip`）→ 同步 `fetch-local-art.mjs` 的 URL 推导。
+- 本机验证不需要完整包：`node tools/fetch-local-art.mjs ../Stronghold-Protocol out.zip` 即可（下载约 64 MB）。
+  设 `STRONGHOLD_LOCAL_ART_URL` 可指向别的 URL / 本机文件。

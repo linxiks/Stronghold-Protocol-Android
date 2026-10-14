@@ -26,7 +26,7 @@ permissions:
 
 env:
   UPSTREAM_REPO: https://github.com/sganggs/Stronghold-Protocol.git
-  UPSTREAM_REF_DEFAULT: cf7a9400270d5aa79b2e601e405dab782e25f120
+  UPSTREAM_REF_DEFAULT: 488db49f11daf862b67ce26fa4cf89aa6cba2466
 
 jobs:
   release:
@@ -76,6 +76,17 @@ jobs:
 
       - name: Prepare upstream build inputs
         run: node tools/prepare-upstream.mjs "$GITHUB_WORKSPACE/../Stronghold-Protocol"
+
+      # 本地客户端美术（官方 3D 棋盘与各战场场景）不在任何公开镜像里，只在上游完整包内。这里用范围请求
+      # 从上游 release 的完整包只取所需条目（约 64 MB），供 app 在资源页下载（LocalArt.kt）。
+      - name: Build local-client art pack
+        id: localart
+        run: |
+          set -euo pipefail
+          upstream="$GITHUB_WORKSPACE/../Stronghold-Protocol"
+          version=$(node -p "require('$upstream/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          node tools/fetch-local-art.mjs "$upstream" "stronghold-local-art-${version}.zip"
 
       - name: Resolve version
         id: version
@@ -156,6 +167,7 @@ jobs:
       - name: Verify APK
         env:
           VERSION_NAME: ${{ steps.version.outputs.name }}
+          LOCAL_ART_NAME: stronghold-local-art-${{ steps.localart.outputs.version }}.zip
         run: |
           set -euo pipefail
           apk=$(ls app/build/outputs/apk/release/*.apk | head -1)
@@ -175,12 +187,17 @@ jobs:
           apksigner=$(find "$sdk/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$apksigner" verify --print-certs "$apk"
           cp "$apk" "stronghold-${VERSION_NAME}.apk"
+          # 美术包必须带上客户端要读的清单，否则装了也看不到场景。
+          unzip -l "$LOCAL_ART_NAME" | grep -q 'data/local-assets.json' || { echo "::error::$LOCAL_ART_NAME 缺少 data/local-assets.json"; exit 1; }
+          ls -l "stronghold-${VERSION_NAME}.apk" "$LOCAL_ART_NAME"
 
-      - name: Upload APK artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: stronghold-apk
-          path: stronghold-*.apk
+          path: |
+            stronghold-*.apk
+            stronghold-local-art-*.zip
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -189,11 +206,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION_NAME: ${{ steps.version.outputs.name }}
+          LOCAL_ART_VERSION: ${{ steps.localart.outputs.version }}
         run: |
           set -euo pipefail
           asset="stronghold-${VERSION_NAME}.apk"
+          art="stronghold-local-art-${LOCAL_ART_VERSION}.zip"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$asset" --clobber
+            gh release upload "$TAG" "$asset" "$art" --clobber
           else
-            gh release create "$TAG" "$asset" --title "$TAG" --generate-notes --verify-tag
+            gh release create "$TAG" "$asset" "$art" --title "$TAG" --generate-notes --verify-tag
           fi

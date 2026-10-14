@@ -12,9 +12,12 @@ object StrongholdInstaller {
 
     private const val ARCHIVE_NAME = "stronghold-runtime.zip"
 
+    /** 运行时解包目录；[LocalArt] 要把本地美术装进去，所以路径只在这里定义一次。 */
+    fun root(context: Context): File = File(context.filesDir, "stronghold")
+
     @Synchronized
     fun install(context: Context): File {
-        val root = File(context.filesDir, "stronghold")
+        val root = root(context)
         val marker = File(root, ".installed-version")
         val stamp = installStamp(context)
 
