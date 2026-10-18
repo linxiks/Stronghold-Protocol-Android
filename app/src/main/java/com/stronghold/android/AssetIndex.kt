@@ -2,6 +2,8 @@ package com.stronghold.android
 
 import android.content.Context
 import org.json.JSONObject
+import java.net.URLDecoder
+import java.util.Base64
 
 internal enum class AssetKind { PNG, MP3, FONT, ATLAS, SKEL, OTHER }
 
@@ -66,6 +68,24 @@ internal fun mirrorUrl(url: String): String? {
     val (owner, repo, branch, path) = RAW_URL.matchEntire(url)?.destructured ?: return null
     if (owner == "ArknightsAssets" && branch == "voice") return null
     return "https://cdn.jsdelivr.net/gh/$owner/$repo@$branch/$path"
+}
+
+/** 上游统计页的素材使用 data: URL；在设备上直接解码，不交给 HTTP 下载器。 */
+internal fun dataUrlBytes(url: String): ByteArray? {
+    if (!url.startsWith("data:")) return null
+    val comma = url.indexOf(',')
+    if (comma < 0) return null
+    val meta = url.substring(5, comma)
+    val payload = url.substring(comma + 1)
+    return try {
+        if (meta.endsWith(";base64", ignoreCase = true)) {
+            Base64.getDecoder().decode(payload)
+        } else {
+            URLDecoder.decode(payload.replace("+", "%2B"), Charsets.UTF_8.name()).toByteArray(Charsets.UTF_8)
+        }
+    } catch (_: IllegalArgumentException) {
+        null
+    }
 }
 
 private val SAFE_REL = Regex("[A-Za-z0-9._/-]+")

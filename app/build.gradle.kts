@@ -5,6 +5,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
 val strongholdSource = rootProject.file(
     (findProperty("stronghold.sourceDir") as String?)?.takeIf { it.isNotBlank() } ?: "../Stronghold-Protocol"
 )
@@ -27,7 +31,7 @@ val strongholdLocalArtUrl: String by lazy {
 }
 
 val strongholdRequiredFiles = listOf(
-    "data", "public", "server", "shared", "packs", "schemas", "plugins/_template",
+    "data", "public", "server", "shared", "packs", "schemas", "plugins/_template", "tools/assets",
     "package.json", "node_modules/.package-lock.json"
 ).map(strongholdSource::resolve)
 
@@ -130,7 +134,7 @@ val packageStrongholdRuntime by tasks.registering(Zip::class) {
     }
 
     from(strongholdSource) { include("package.json") }
-    listOf("data", "public", "server", "shared", "packs", "schemas", "plugins").forEach { dir ->
+    listOf("data", "public", "server", "shared", "packs", "schemas", "plugins", "tools/assets").forEach { dir ->
         from(strongholdSource.resolve(dir)) {
             into(dir)
             // 游戏素材不随 APK 分发：由连接页下载或从用户的资源包读取。

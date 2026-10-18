@@ -193,10 +193,10 @@ internal object AssetTasks {
             added += file.rel
             return null
         }
-        val sources = if (entry != null) {
-            listOfNotNull(entry.url, mirrorUrl(entry.url))
-        } else {
-            file.urls.flatMap { listOfNotNull(it, mirrorUrl(it)) }
+        val sources = when {
+            file.urls.firstOrNull()?.startsWith("data:") == true -> file.urls
+            entry != null -> listOfNotNull(entry.url, mirrorUrl(entry.url))
+            else -> file.urls.flatMap { listOfNotNull(it, mirrorUrl(it)) }
         }
         val expected = when {
             entry != null -> entry.bytes
@@ -205,7 +205,7 @@ internal object AssetTasks {
             local > 0L -> local
             else -> packed
         }
-        return CheckItem(file.rel, sources, entry?.etag, expected)
+        return CheckItem(file.rel, sources, entry?.etag, expected, entry?.url)
     }
 
     /**
@@ -435,6 +435,15 @@ internal object AssetTasks {
     private fun fetchFile(file: AssetFile, root: File): LedgerEntry? {
         var lastError: String? = null
         for (url in file.urls) {
+            if (url.startsWith("data:")) {
+                val body = dataUrlBytes(url)
+                if (body == null || !isValidPayload(file.kind, body)) {
+                    lastError = "invalid data URL payload"
+                    continue
+                }
+                if (!writeAtomically(File(root, file.rel), body)) return null
+                return LedgerEntry(url, null, body.size.toLong())
+            }
             for (src in listOfNotNull(url, mirrorUrl(url))) {
                 for (attempt in 1..DOWNLOAD_ATTEMPTS) {
                     if (cancelled.get()) return null
@@ -537,7 +546,13 @@ internal object AssetTasks {
     // ---- 检查更新 ----
 
     /** [etag] / [bytes] 为期望值：与原项目下载地址当前返回的不同即视为有更新。 */
-    private class CheckItem(val rel: String, val sources: List<String>, val etag: String?, val bytes: Long?)
+    private class CheckItem(
+        val rel: String,
+        val sources: List<String>,
+        val etag: String?,
+        val bytes: Long?,
+        val previousUrl: String?,
+    )
 
     private enum class Verdict { UNCHANGED, CHANGED, REMOVED, FAILED, UNKNOWN }
 
@@ -573,6 +588,9 @@ internal object AssetTasks {
     }
 
     private fun checkItem(item: CheckItem): Verdict {
+        item.sources.firstOrNull()?.takeIf { it.startsWith("data:") }?.let { currentUrl ->
+            return if (item.previousUrl == currentUrl) Verdict.UNCHANGED else Verdict.CHANGED
+        }
         var errors = 0
         for (src in item.sources) {
             var sourceError = true

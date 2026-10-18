@@ -174,6 +174,7 @@ jobs:
       - name: Verify APK
         env:
           VERSION_NAME: ${{ steps.version.outputs.name }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
           LOCAL_ART_NAME: stronghold-local-art-${{ steps.localart.outputs.version }}.zip
         run: |
           set -euo pipefail
@@ -191,17 +192,21 @@ jobs:
             grep -q "$entry" "$RUNNER_TEMP/apk.list" || { echo "::error::APK 缺少 $entry"; exit 1; }
           done
           python3 - "$apk" "$LOCAL_ART_NAME" <<'PY'
-          import io, json, sys, zipfile
+          import io, json, os, sys, zipfile
           with zipfile.ZipFile(sys.argv[1]) as apk:
               index = json.loads(apk.read('assets/asset-index.json'))
               with zipfile.ZipFile(io.BytesIO(apk.read('assets/stronghold-runtime.zip'))) as runtime:
                   package = json.loads(runtime.read('package.json'))
                   manifest = json.loads(runtime.read('data/assets.json'))
                   required = ('server/index.js', 'schemas/plugin.schema.json',
-                              'plugins/_template/content/plugin.json', 'packs/README.md')
+                              'plugins/_template/content/plugin.json', 'packs/README.md',
+                              'tools/assets/skel.mjs', 'tools/assets/anim-roles.mjs',
+                              'tools/assets/atlas.mjs', 'tools/assets/official-tables.mjs')
                   missing = [path for path in required if path not in runtime.namelist()]
                   assert not missing, f'runtime missing: {missing}'
                   assert package['version'] == sys.argv[2].removeprefix('stronghold-local-art-').removesuffix('.zip')
+                  if os.environ['RELEASE_TAG']:
+                      assert package['version'] == os.environ['VERSION_NAME'], 'release tag differs from upstream version'
                   assert index['manifestHash'] == manifest['hash']
                   assert not index.get('missing'), f"asset index missing {len(index['missing'])} URLs"
           PY

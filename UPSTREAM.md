@@ -10,7 +10,7 @@
 
 | Gradle 任务 | 读取的上游内容 | 产物 |
 |---|---|---|
-| `packageStrongholdRuntime` | `package.json`、`data/`、`public/`（排除 `public/assets/**`）、`server/`、`shared/`、`packs/`、`schemas/`、`plugins/`（只收上游模板和说明）、`node_modules/`（剔除 dev 包） | `assets/stronghold-runtime.zip` |
+| `packageStrongholdRuntime` | `package.json`、`data/`、`public/`（排除 `public/assets/**`）、`server/`、`shared/`、`packs/`、`schemas/`、`plugins/`（只收上游模板和说明）、`tools/assets/`、`node_modules/`（剔除 dev 包） | `assets/stronghold-runtime.zip` |
 | `generateStrongholdAssetIndex` | 由 `tools/build-asset-index.mjs` 读取上游 `tools/assets/{plan,manifest,cache,audio,spine,formats,sources,atlas,stats-template}.mjs`、`tools/fetch-assets.mjs`、`data/assets.json`、`data/{enemies,tokens,bosses,backups,chess}.json`、`docs/research/{03-operators,05-enemies,05-maps,07-assets}.json`、`.cache/`，以及美术包提供的 `public/assets/local/fx/index.json` | `assets/asset-index.json` |
 | `syncStrongholdFonts` | `public/fonts/{novecento-wide-normal,bender-regular}.otf` | `assets/fonts/*` |
 
@@ -178,3 +178,9 @@ UnityPy 现场解包，所以：
 - **上游改了完整包文件名**（`Stronghold-Protocol-v<版本>.zip`）→ 同步 `fetch-local-art.mjs` 的 URL 推导。
 - 本机验证不需要完整包：`node tools/fetch-local-art.mjs ../Stronghold-Protocol out.zip` 即可（v0.3.1 下载约 157 MB）。
   设 `STRONGHOLD_LOCAL_ART_URL` 可指向别的 URL / 本机文件。
+
+## 运行时打包检查
+
+上游服务端会直接导入 `tools/assets/` 中的模块。`packageStrongholdRuntime` 必须把整个目录放进 `assets/stronghold-runtime.zip`；版本升级时还要检查上游新增的启动期导入。遗漏时，点击运行会在 prepare 后报 `ERR_MODULE_NOT_FOUND` 并退出。发布工作流的 `Verify APK` 步骤会核验关键模块。
+
+发布标签必须与内置上游 `package.json` 的版本一致。修订同版本 Android 产物时，应核对现有 Release 的 APK、美术包和标签所指向的提交。
