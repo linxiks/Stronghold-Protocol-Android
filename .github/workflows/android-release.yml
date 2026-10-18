@@ -26,13 +26,13 @@ permissions:
 
 env:
   UPSTREAM_REPO: https://github.com/sganggs/Stronghold-Protocol.git
-  UPSTREAM_REF_DEFAULT: 488db49f11daf862b67ce26fa4cf89aa6cba2466
+  UPSTREAM_REF_DEFAULT: b3deebdae4a92642c007d217a1a4573e5d3612c5
 
 jobs:
   release:
     name: Build release APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout (with LFS)
         uses: actions/checkout@v7
@@ -77,8 +77,11 @@ jobs:
       - name: Prepare upstream build inputs
         run: node tools/prepare-upstream.mjs "$GITHUB_WORKSPACE/../Stronghold-Protocol"
 
-      # 本地客户端美术（官方 3D 棋盘与各战场场景）不在任何公开镜像里，只在上游完整包内。这里用范围请求
-      # 从上游 release 的完整包只取所需条目（约 64 MB），供 app 在资源页下载（LocalArt.kt）。
+      - name: Check local art pack extractor
+        run: node --test test/fetch-local-art.test.mjs
+
+      # 本地客户端美术（3D 棋盘、战场场景与官方特效）只在上游完整包内。这里用范围请求
+      # 从上游 release 的完整包提取所需条目，供 app 在资源页下载（LocalArt.kt）。
       - name: Build local-client art pack
         id: localart
         run: |
@@ -87,6 +90,9 @@ jobs:
           version=$(node -p "require('$upstream/package.json').version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           node tools/fetch-local-art.mjs "$upstream" "stronghold-local-art-${version}.zip"
+          # 与上游 fetch-assets.mjs 一样，以官方特效索引确定干员技能动作的音效模式。
+          mkdir -p "$upstream/public/assets/local/fx"
+          unzip -p "stronghold-local-art-${version}.zip" public/assets/local/fx/index.json > "$upstream/public/assets/local/fx/index.json"
 
       - name: Resolve version
         id: version
@@ -141,17 +147,18 @@ jobs:
           # CI 既没有 .cache/assets-ledger.json，也无从察觉 docs/research/07-assets.json 里的尺寸是否过期，
           # 因此逐个用源站 Content-Length 校正 asset-index.json 的 bytes（客户端正是拿它比对更新、估算占用）。
           STRONGHOLD_VERIFY_ASSET_SIZES: '1'
+          STRONGHOLD_ASSET_INDEX_STRICT: '1'
         run: |
           set -euo pipefail
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace assembleRelease &
           build=$!
-          # 曾经在 :app:compileReleaseKotlin 静默挂到 60 分钟超时。超过 20 分钟（从零构建约 5 分钟）即判为卡死：
+          # 资源索引需逐项检查 URL；给网络检查预留时间。超过 45 分钟即判为卡死：
           # 先导出 JVM 线程栈供定位，再终止构建让 job 立刻失败，而不是白等到超时。
           (
-            sleep 1200
+            sleep 2700
             kill -0 "$build" 2>/dev/null || exit 0
-            echo "::error::构建已超过 20 分钟，判定为卡死；以下是各 JVM 的线程栈"
+            echo "::error::构建已超过 45 分钟，判定为卡死；以下是各 JVM 的线程栈"
             for pid in $(pgrep java); do
               echo "=== jstack $pid ==="
               "$JAVA_HOME/bin/jstack" "$pid" 2>&1 || true
@@ -183,12 +190,28 @@ jobs:
             assets/fonts/novecento-wide-normal.otf ; do
             grep -q "$entry" "$RUNNER_TEMP/apk.list" || { echo "::error::APK 缺少 $entry"; exit 1; }
           done
+          python3 - "$apk" "$LOCAL_ART_NAME" <<'PY'
+          import io, json, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as apk:
+              index = json.loads(apk.read('assets/asset-index.json'))
+              with zipfile.ZipFile(io.BytesIO(apk.read('assets/stronghold-runtime.zip'))) as runtime:
+                  package = json.loads(runtime.read('package.json'))
+                  manifest = json.loads(runtime.read('data/assets.json'))
+                  required = ('server/index.js', 'schemas/plugin.schema.json',
+                              'plugins/_template/content/plugin.json', 'packs/README.md')
+                  missing = [path for path in required if path not in runtime.namelist()]
+                  assert not missing, f'runtime missing: {missing}'
+                  assert package['version'] == sys.argv[2].removeprefix('stronghold-local-art-').removesuffix('.zip')
+                  assert index['manifestHash'] == manifest['hash']
+                  assert not index.get('missing'), f"asset index missing {len(index['missing'])} URLs"
+          PY
           sdk="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           apksigner=$(find "$sdk/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$apksigner" verify --print-certs "$apk"
           cp "$apk" "stronghold-${VERSION_NAME}.apk"
           # 美术包必须带上客户端要读的清单，否则装了也看不到场景。
           unzip -l "$LOCAL_ART_NAME" | grep -q 'data/local-assets.json' || { echo "::error::$LOCAL_ART_NAME 缺少 data/local-assets.json"; exit 1; }
+          unzip -l "$LOCAL_ART_NAME" | grep -q 'data/local-fx.json' || { echo "::error::$LOCAL_ART_NAME 缺少 data/local-fx.json"; exit 1; }
           ls -l "stronghold-${VERSION_NAME}.apk" "$LOCAL_ART_NAME"
 
       - name: Upload artifacts

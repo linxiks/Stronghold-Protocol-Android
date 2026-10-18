@@ -31,6 +31,10 @@ internal fun isValidPayload(kind: AssetKind, buf: ByteArray): Boolean = when (ki
     AssetKind.PNG -> pngSize(buf) != null && buf.size >= 12 && buf.latin1(buf.size - 8, buf.size - 4) == "IEND"
     AssetKind.MP3 -> buf.size >= 128 &&
         (buf.latin1(0, 3) == "ID3" || ((buf[0].toInt() and 0xFF) == 0xFF && (buf[1].toInt() and 0xE0) == 0xE0))
+    AssetKind.FONT -> buf.size >= 48 && (
+        buf.latin1(0, 4) == "wOF2" || buf.latin1(0, 4) == "OTTO" ||
+            buf.latin1(0, 4) == "true" || buf.u32(0) == 0x00010000L
+        )
     AssetKind.ATLAS -> {
         val text = String(buf, Charsets.UTF_8)
         !text.contains('\u0000') && ATLAS_PAGE_LINE.containsMatchIn(text)

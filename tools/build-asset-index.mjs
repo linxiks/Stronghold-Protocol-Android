@@ -29,23 +29,25 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const ASSET_PREFIX = '/assets/';
-const KINDS = new Set(['png', 'mp3', 'atlas', 'skel']);
+const KINDS = new Set(['png', 'mp3', 'font', 'atlas', 'skel']);
 
 async function main(argv) {
   if (argv.length !== 2) throw new Error('usage: node tools/build-asset-index.mjs <upstreamRoot> <outFile>');
   const root = resolve(argv[0]);
   const out = resolve(argv[1]);
   const load = (name) => import(pathToFileURL(join(root, 'tools/assets', `${name}.mjs`)).href);
-  const [planM, manifestM, cacheM, audioM, spineM, formatsM, sourcesM, atlasM, fetchM] = await Promise.all([
+  const [planM, manifestM, cacheM, audioM, spineM, formatsM, sourcesM, atlasM, statsM, fetchM] = await Promise.all([
     ...['plan', 'manifest', 'cache', 'audio', 'spine', 'formats', 'sources', 'atlas'].map(load),
+    load('stats-template'),
     // dataExtras 住在 fetch-assets.mjs（它只在被当作脚本运行时才执行 main），补位与自选编队的干员、
     // 召唤物和模组图标都由它给出，直接复用以免把那段规则复制一份。
     import(pathToFileURL(join(root, 'tools/fetch-assets.mjs')).href),
   ]);
-  const [{ buildPlan }, { collectLeaves }, { loadIndexes }, { indexAudio }, { loadLocalSpines, LOCAL_ENEMY_SPINES_FILE, LOCAL_TOKEN_SPINES_FILE }, { kindOf }, { mirrorUrl, safeName, urlDir }] =
+  const [{ buildPlan, charModesFromIndex }, { collectLeaves }, { loadIndexes }, { indexAudio }, { loadLocalSpines, LOCAL_ENEMY_SPINES_FILE, LOCAL_TOKEN_SPINES_FILE }, { kindOf }, { mirrorUrl, safeName, urlDir }] =
     [planM, manifestM, cacheM, audioM, spineM, formatsM, sourcesM];
   const { atlasInfo } = atlasM;
   const { dataExtras } = fetchM;
+  const { statsTemplateJobs } = statsM;
   const readJson = async (rel) => JSON.parse(await readFile(join(root, rel), 'utf8'));
 
   // Same plan inputs as upstream tools/fetch-assets.mjs main().
@@ -71,12 +73,17 @@ async function main(argv) {
   const extras = dataExtras(dataBackups, dataChess);
   const localEnemySpines = await loadLocalSpines(join(root, LOCAL_ENEMY_SPINES_FILE));
   const localTokenSpines = await loadLocalSpines(join(root, LOCAL_TOKEN_SPINES_FILE));
+  const statsTemplate = await statsTemplateJobs(root, { offline: true, log: () => {} });
+  const charModes = await readJson('public/assets/local/fx/index.json').then(charModesFromIndex).catch((e) => {
+    if (e?.code === 'ENOENT') return null;
+    throw e;
+  });
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData: indexes.modelsData,
     // 上游 fetch-assets.mjs main() 同样传 charword + voiceLang：manifest 自 v0.1.2 起引用动作语音
     // (audio/voice/**)，不传这两个参数时 plan 里没有 voice 的 URL，这些文件会落进下面的 missing
     // 而从下载列表消失。voiceSlots 保持默认（plan.mjs 的 VOICE_BATTLE_SLOTS，即实战可播的槽位）。
-    charword: indexes.charword, voiceLang: 'cn',
+    charword: indexes.charword, voiceLang: 'cn', optionalVoice: true,
     extraEnemyIds: Object.keys(dataEnemies || {}),
     extraTokenIds: [...Object.keys(dataTokens || {}), ...extras.tokenIds],
     extraHandbook,
@@ -84,6 +91,8 @@ async function main(argv) {
     localTokenSpines,
     extraOperators: extras.extraOperators,
     moduleTypes: extras.moduleTypes,
+    statsTemplate,
+    charModes,
   });
 
   // 上游 fetch-assets.mjs 的 processModels 在下载 atlas 之后才发现它引用的额外纹理页（索引通常只列第一页），

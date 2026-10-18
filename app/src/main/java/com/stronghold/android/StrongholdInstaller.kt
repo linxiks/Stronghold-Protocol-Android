@@ -18,6 +18,11 @@ object StrongholdInstaller {
     @Synchronized
     fun install(context: Context): File {
         val root = root(context)
+        val previousRoot = File(context.filesDir, "stronghold-previous")
+        // 上次更新若在目录切换中被系统终止，先恢复旧运行时与其中的插件。
+        if (!root.exists() && previousRoot.exists()) {
+            check(previousRoot.renameTo(root)) { "Unable to restore previous Stronghold runtime" }
+        }
         val marker = File(root, ".installed-version")
         val stamp = installStamp(context)
 
@@ -26,6 +31,9 @@ object StrongholdInstaller {
             marker.readText().trim() == stamp &&
             validateRuntime(root)
         ) {
+            if (previousRoot.exists() && !previousRoot.deleteRecursively()) {
+                Log.w(TAG, "Unable to remove previous Stronghold runtime backup")
+            }
             Log.i(TAG, "Stronghold runtime already installed")
             return root
         }
@@ -49,17 +57,30 @@ object StrongholdInstaller {
             "Stronghold runtime validation failed"
         }
 
+        // 插件、工作台草稿及 config.json 由用户写入运行时；模板文档以本次 APK 的版本为准。
+        File(root, "plugins").listFiles()
+            ?.filterNot { it.name == "_template" || it.name == "README.md" || it.name == "AGENTS.md" }
+            ?.forEach { plugin ->
+                check(plugin.copyRecursively(File(tempRoot, "plugins/${plugin.name}"), overwrite = false)) {
+                    "Unable to preserve plugin data: ${plugin.name}"
+                }
+            }
+
         File(tempRoot, ".installed-version")
             .writeText(stamp)
 
-        if (root.exists()) {
-            check(root.deleteRecursively()) {
-                "Unable to remove previous Stronghold runtime"
-            }
+        if (previousRoot.exists()) {
+            check(previousRoot.deleteRecursively()) { "Unable to clear previous Stronghold runtime backup" }
         }
-
-        check(tempRoot.renameTo(root)) {
-            "Unable to activate Stronghold runtime"
+        if (root.exists()) {
+            check(root.renameTo(previousRoot)) { "Unable to back up previous Stronghold runtime" }
+        }
+        if (!tempRoot.renameTo(root)) {
+            if (previousRoot.exists()) previousRoot.renameTo(root)
+            error("Unable to activate Stronghold runtime")
+        }
+        if (previousRoot.exists() && !previousRoot.deleteRecursively()) {
+            Log.w(TAG, "Unable to remove previous Stronghold runtime backup")
         }
 
         Log.i(
@@ -141,6 +162,7 @@ object StrongholdInstaller {
             File(root, "package.json").isFile &&
             File(root, "data").isDirectory &&
             File(root, "shared").isDirectory &&
+            File(root, "plugins/_template").isDirectory &&
             File(root, "node_modules").isDirectory
     }
 }

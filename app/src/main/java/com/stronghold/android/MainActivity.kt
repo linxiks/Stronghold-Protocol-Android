@@ -14,12 +14,15 @@ import android.view.View
 import android.view.WindowManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.ValueCallback
 import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -34,10 +37,12 @@ class MainActivity : Activity() {
         private const val LOCAL_AUTHORITY = "127.0.0.1:3000"
         private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
         private const val REQUEST_IMPORT_ASSETS = 1001
+        private const val REQUEST_WEB_FILE_CHOOSER = 1002
     }
 
     /** 当前显示的 WebView；显示连接页时为 null。 */
     private var webView: WebView? = null
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
 
     /** API 33+ 的 OnBackInvokedCallback；声明为 Any，避免低版本系统解析该类。 */
     private var backCallback: Any? = null
@@ -72,7 +77,7 @@ class MainActivity : Activity() {
     // ---- 连接页 ----
 
     private fun showConnectionPage() {
-        val screen = ConnectionScreen(this, history, assets, ::startLocalMode, ::startExternalMode, ::pickAssetArchive)
+        val screen = ConnectionScreen(this, history, assets, { startLocalMode() }, { startLocalMode(studio = true) }, ::startExternalMode, ::pickAssetArchive)
         connectionScreen = screen
         setContentView(screen.createView())
         // 先把 WebView 移出视图树再销毁。
@@ -101,6 +106,11 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_WEB_FILE_CHOOSER) {
+            fileChooserCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data))
+            fileChooserCallback = null
+            return
+        }
         if (requestCode != REQUEST_IMPORT_ASSETS || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         connectionScreen?.onArchivePicked(uri)
@@ -115,7 +125,7 @@ class MainActivity : Activity() {
 
     // ---- 本地 / 外部模式 ----
 
-    private fun startLocalMode() {
+    private fun startLocalMode(studio: Boolean = false) {
         val view = createWebView()
         showLoadingPage(view, "Preparing Stronghold...")
         thread(name = "Stronghold-Bootstrap") {
@@ -136,7 +146,12 @@ class MainActivity : Activity() {
                     }
                 }
                 waitForServer(LOCAL_SERVER_URL, 60_000, NodeManager::failureReason)
-                onCurrentWebView(view) { it.loadUrl(LOCAL_SERVER_URL) }
+                val pageUrl = if (studio) {
+                    val key = File(root, "plugins/.studio-key").readText().trim()
+                    check(Regex("[A-Za-z0-9_-]{22,64}").matches(key)) { "插件工作台钥匙不可用" }
+                    "$LOCAL_SERVER_URL/studio/#key=$key"
+                } else LOCAL_SERVER_URL
+                onCurrentWebView(view) { it.loadUrl(pageUrl) }
             } catch (t: Throwable) {
                 Log.e(TAG, "Stronghold startup failed", t)
                 onCurrentWebView(view) { showError(it, "Stronghold startup failed", t.stackTraceToString()) }
@@ -211,10 +226,32 @@ class MainActivity : Activity() {
             domStorageEnabled = true
             cacheMode = WebSettings.LOAD_DEFAULT
             allowFileAccess = false
-            allowContentAccess = false
+            allowContentAccess = true
             mediaPlaybackRequiresUserGesture = false
             builtInZoomControls = false
             displayZoomControls = false
+        }
+        view.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: WebChromeClient.FileChooserParams?,
+            ): Boolean {
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = filePathCallback
+                return try {
+                    startActivityForResult(fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "*/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }, REQUEST_WEB_FILE_CHOOSER)
+                    true
+                } catch (_: ActivityNotFoundException) {
+                    fileChooserCallback?.onReceiveValue(null)
+                    fileChooserCallback = null
+                    Toast.makeText(this@MainActivity, "没有可用的文件选择器", Toast.LENGTH_SHORT).show()
+                    true
+                }
+            }
         }
         view.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -253,6 +290,8 @@ class MainActivity : Activity() {
 
     private fun closeWebView() {
         val view = webView ?: return
+        fileChooserCallback?.onReceiveValue(null)
+        fileChooserCallback = null
         webView = null
         setBackInterception(false)
         view.stopLoading()

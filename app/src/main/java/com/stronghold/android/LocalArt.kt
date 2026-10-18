@@ -34,13 +34,13 @@ internal sealed interface LocalArtState {
 }
 
 /**
- * 本地客户端美术包：官方 3D 棋盘（图集、tiles.json、网格）与 11 个战场的官方场景。
+ * 本地客户端美术包：官方 3D 棋盘、11 个战场的场景与官方特效。
  *
- * 上游把这些提取好的素材放进完整包（约 583 MB），公开镜像只有需要 UnityPy 解包的原始资源包，Android 端没法
+ * 上游把这些提取好的素材放进 v0.3.1 完整包（约 846 MB），公开镜像只有需要 UnityPy 解包的原始资源包，Android 端没法
  * 现提取；所以本项目 release 另出一份只含所需条目的 zip（`tools/fetch-local-art.mjs`），这里只管下载与安装。
  *
- * 页面由内置的 node 服务提供，它从运行时目录读 `data/local-assets.json`（清单）与 `public/assets/local/` 下的
- * 文件，两者缺一客户端就退回金属地块/2D 棋盘，所以两份都要落地。运行时目录在每次 APK 更新后重建
+ * 页面由内置的 node 服务提供，它从运行时目录读 `data/local-assets.json`、`data/local-fx.json` 与
+ * `public/assets/local/` 下的文件。运行时目录在每次 APK 更新后重建，
  * （`StrongholdInstaller` 的安装戳是包的 lastUpdateTime），因此 zip 留一份，重建后由 [ensureInstalled] 重装。
  */
 internal object LocalArt {
@@ -48,6 +48,7 @@ internal object LocalArt {
     private const val DIR = "local-art"
     /** 清单里的相对路径；文件在这里出现就认为装好了。 */
     private const val MANIFEST = "data/local-assets.json"
+    private const val FX_MANIFEST = "data/local-fx.json"
     private const val ART_PREFIX = "public/assets/local/"
     private const val USER_AGENT = "Stronghold-Android"
     private const val PROGRESS_INTERVAL_MS = 250L
@@ -86,7 +87,8 @@ internal object LocalArt {
     fun status(context: Context): Status {
         val pack = packFile(context)
         if (!pack.isFile) return Status(Phase.ABSENT, 0)
-        val installed = File(StrongholdInstaller.root(context), MANIFEST).isFile
+        val root = StrongholdInstaller.root(context)
+        val installed = File(root, MANIFEST).isFile && File(root, FX_MANIFEST).isFile
         return Status(if (installed) Phase.INSTALLED else Phase.READY, pack.length())
     }
 
@@ -140,7 +142,7 @@ internal object LocalArt {
         if (!runtimeRoot.isDirectory) return
         val pack = packFile(context)
         if (!pack.isFile) return
-        if (File(runtimeRoot, MANIFEST).isFile) return
+        if (File(runtimeRoot, MANIFEST).isFile && File(runtimeRoot, FX_MANIFEST).isFile) return
         Log.i(TAG, "Installing local art from ${pack.name}")
         try {
             extract(pack, runtimeRoot) { _, _ -> }
@@ -229,7 +231,7 @@ internal object LocalArt {
     }
 
     /**
-     * 把包里的 `public/assets/local/` 下的文件与 `data/local-assets.json` 写进 [runtimeRoot]。
+     * 把包里的 `public/assets/local/` 下的文件与两个本地清单写进 [runtimeRoot]。
      * 清单最后写：中途失败时它不在，下次启动会重装，而不是留下一个"装了但缺文件"的目录。
      */
     private fun extract(pack: File, runtimeRoot: File, report: (Long, Long) -> Unit) {
@@ -238,7 +240,12 @@ internal object LocalArt {
         ZipFile(pack).use { zip ->
             val entries = zip.entries().toList()
                 .filter { !it.isDirectory && keep(it.name) }
-                .sortedBy { if (it.name == MANIFEST) 1 else 0 }
+                .sortedBy { if (it.name == MANIFEST || it.name == FX_MANIFEST) 1 else 0 }
+            check(entries.any { it.name == MANIFEST } && entries.any { it.name == FX_MANIFEST }) {
+                "美术包缺少本地素材清单"
+            }
+            File(root, MANIFEST).delete()
+            File(root, FX_MANIFEST).delete()
             var done = 0L
             for (entry in entries) {
                 if (cancelled.get()) throw IOException("已取消")
@@ -251,12 +258,12 @@ internal object LocalArt {
                 done++
                 report(done, entries.size.toLong())
             }
-            check(File(root, MANIFEST).isFile) { "美术包里没有 $MANIFEST" }
+            check(File(root, MANIFEST).isFile && File(root, FX_MANIFEST).isFile) { "本地素材清单安装失败" }
             Log.i(TAG, "Local art installed: $done files")
         }
     }
 
-    private fun keep(name: String): Boolean = name == MANIFEST || name.startsWith(ART_PREFIX)
+    private fun keep(name: String): Boolean = name == MANIFEST || name == FX_MANIFEST || name.startsWith(ART_PREFIX)
 
     // ---- 状态 ----
 

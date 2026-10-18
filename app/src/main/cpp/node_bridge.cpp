@@ -170,6 +170,10 @@ Java_com_stronghold_android_NodeManager_startNodeWithArguments(
      */
     redirectStdioToLogcat();
 
+    // Android embeds libnode without a standalone node executable. Upstream v0.3.0
+    // defaults gameplay plugin match hosts to child_process.fork; use its worker transport.
+    setenv("SP_MATCH_HOST", "worker", 0);
+
     const int result = node::Start(
             static_cast<int>(argumentCount),
             argv.data()

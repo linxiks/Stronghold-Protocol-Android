@@ -10,11 +10,11 @@
 
 | Gradle 任务 | 读取的上游内容 | 产物 |
 |---|---|---|
-| `packageStrongholdRuntime` | `package.json`、`data/`、`public/`（排除 `public/assets/**`）、`server/`、`shared/`、`node_modules/`（剔除 dev 包） | `assets/stronghold-runtime.zip` |
-| `generateStrongholdAssetIndex` | 由 `tools/build-asset-index.mjs` 读取上游 `tools/assets/{plan,manifest,cache,audio,spine,formats,sources,atlas}.mjs`、`tools/fetch-assets.mjs`、`data/assets.json`、`data/{enemies,tokens,bosses,backups,chess}.json`、`docs/research/{03-operators,05-enemies,05-maps,07-assets}.json`、`.cache/` | `assets/asset-index.json` |
+| `packageStrongholdRuntime` | `package.json`、`data/`、`public/`（排除 `public/assets/**`）、`server/`、`shared/`、`packs/`、`schemas/`、`plugins/`（只收上游模板和说明）、`node_modules/`（剔除 dev 包） | `assets/stronghold-runtime.zip` |
+| `generateStrongholdAssetIndex` | 由 `tools/build-asset-index.mjs` 读取上游 `tools/assets/{plan,manifest,cache,audio,spine,formats,sources,atlas,stats-template}.mjs`、`tools/fetch-assets.mjs`、`data/assets.json`、`data/{enemies,tokens,bosses,backups,chess}.json`、`docs/research/{03-operators,05-enemies,05-maps,07-assets}.json`、`.cache/`，以及美术包提供的 `public/assets/local/fx/index.json` | `assets/asset-index.json` |
 | `syncStrongholdFonts` | `public/fonts/{novecento-wide-normal,bender-regular}.otf` | `assets/fonts/*` |
 
-CI 里另跑 `tools/prepare-upstream.mjs`，负责准备 `.cache/`（音频/角色词条/模型索引）与字体（含
+CI 里另跑 `tools/prepare-upstream.mjs`，负责准备 `.cache/`（音频/角色词条/模型索引与统计页 CSS）与字体（含
 `fonts.css` / `.woff2`），以及 `tools/fetch-local-art.mjs`，从上游 release 的**完整包**里用范围请求抠出
 本地客户端美术（见 §4）。
 
@@ -35,6 +35,11 @@ URL 形状时，`RemoteAssets.kt` 的 `HASH_SEGMENT` 与 `VIEW_MANIFESTS` 要同
 约定：本地上游 clone 在 `../Stronghold-Protocol`；Windows 下用 `gradlew.bat`（`./gradlew` 无扩展名会被
 Windows 判为无效程序，报 os error 193）。
 
+当前开发机的 Android Studio SDK 位于 `D:\skyan\env\android-sdk-windows`（见 Android Studio 配置的
+`android.sdk.path`）；PowerShell 本地构建前需设置 `$env:ANDROID_HOME` / `$env:ANDROID_SDK_ROOT` 为该路径。
+CI 由 `android-actions/setup-android` 安装并配置 SDK。PowerShell 传含点号的 Gradle 属性时，将整个
+`-Pstronghold.sourceDir=.upstream-v0.3.1` 参数加引号。
+
 ### 步骤 0 — 拉取上游并确认版本
 
 Git 全局可能配了失效代理（`http.proxy=127.0.0.1:5447`）。fetch 报连不上代理时用 `-c` 临时清空：
@@ -52,15 +57,17 @@ git log --oneline -1 origin/master                            # master 是否领
 ### 步骤 1 — 评估集成面（只 diff 这几个路径）
 
 ```bash
-git diff --stat <old_tag> <new_tag> -- tools data docs/research public/fonts package.json package-lock.json
+git diff --stat <old_tag> <new_tag> -- tools data docs/research public/fonts public/studio server shared packs plugins schemas package.json package-lock.json
 ```
 
 对照上表判断影响：
 
-- `tools/assets/{plan,manifest,cache,audio,formats,sources,atlas}.mjs`、`tools/fetch-assets.mjs` 变了 →
+- `tools/assets/{plan,manifest,cache,audio,formats,sources,atlas,stats-template}.mjs`、`tools/fetch-assets.mjs` 变了 →
   `tools/build-asset-index.mjs` 的调用签名/入参可能要同步（它逐条对齐上游 `fetch-assets.mjs` 的 plan 入参）。
 - `tools/assets/formats.mjs` / `atlas.mjs` / `sources.mjs` 变了 → `AssetFormats.kt` 是逐条照搬，需要同步。
 - `data/assets.json` 变了 → 重新生成索引即可（rel/URL 集合通常不变，`manifestHash` 必变）。
+- 语音树或统计页素材变了 → 检查索引覆盖新增 URL（v0.3.0 起含英/韩/本土语言和统计页 WOFF2/CSS/SVG）。
+- `plugins/`、`schemas/`、`packs/` 或服务端插件启动流程变了 → 检查 APK 运行时输入、插件数据升级保留和 Android Worker 匹配宿主。
 - `tools/{build-data,balance,golden,doctor,package,package-update}.mjs`、`test/` → 上游构建/维护工具，
   外壳不经过，一般无需动。
 - `package.json` 版本变化但依赖未变 → 无需 `npm ci`。
@@ -99,6 +106,7 @@ node tools/prepare-upstream.mjs ../Stronghold-Protocol
 
 ```bash
 ./gradlew.bat --no-daemon --stacktrace :app:assembleDebug
+# 上游 clone 位于本仓库内时可加 '-Pstronghold.sourceDir=.upstream-v0.3.1'
 ```
 
 ### 步骤 5 — 校验 APK 内容
@@ -144,27 +152,29 @@ git push origin master && git push origin vX.Y.Z
 - **上游新增的启动期校验**（如 0.2.1 的 `server/update.js`）：只在安装目录存在 `UPDATE.json` 时才生效，
   runtime zip 不含它，`applyPendingUpdate` 返回 `none`，不影响 Android 启动。
 - **不要忘**：`AssetFormats.kt` 与上游 `formats/atlas/sources.mjs` 是手工对照关系，上游改这三个文件要同步。
+- **插件数据**：`StrongholdInstaller` 在更新 APK 时重新解包运行时，必须保留旧 `plugins/` 下的用户文件；`_template/` 等上游资源则用新版替换。Android 嵌入式 Node 没有独立的 `node` 可执行文件，默认用上游 `SP_MATCH_HOST=worker` 跑无脚本的玩法插件。
 
 ## 4. 本地美术包（3D 棋盘与各战场场景）
 
-上游把提取好的本地美术放进**完整包**（0.2.6 起约 583 MB，`packs/` 与 `public/assets/local/`），而公开镜像
+上游把提取好的本地美术放进**完整包**（v0.3.1 约 846 MB，`public/assets/local/`），而公开镜像
 （`stronghold-bundle-*-minimal.zip`）里没有；Android 端又没法像上游 `tools/setup.mjs --scenes` 那样用
 UnityPy 现场解包，所以：
 
-1. CI 跑 `tools/fetch-local-art.mjs`，对上游 release 的完整包发范围请求，只取出
-   `public/assets/local/**` 与 `data/local-assets.json`（约 64 MB，见该脚本头部的条目清单）。
+1. CI 跑 `tools/fetch-local-art.mjs`，对上游 release 的完整包发合并后的范围请求，只取出
+   `public/assets/local/{scene,map,mesh,fx}/**` 与 `data/{local-assets,local-fx}.json`（v0.3.1 压缩后约 157 MB）。
+   构建资源索引前，CI 还会从包内取出 `public/assets/local/fx/index.json`，用于上游 v0.3.1 的技能音效模式分配。
 2. 打成本仓库 release 的 `stronghold-local-art-<上游版本>.zip`，与 APK 同版本同 tag 发布。
 3. app 在资源页「本地美术包」按钮下载（`LocalArt.kt`；地址经 `BuildConfig.LOCAL_ART_URL` 注入，可用
    `-Pstronghold.localArtUrl=…` 覆盖），解到运行时目录 `filesDir/stronghold` 的 `public/assets/local/**` 与
-   `data/local-assets.json`；zip 留一份，APK 更新重建运行时目录后由 `LocalArt.ensureInstalled()` 自动重装。
+   `data/local-assets.json`、`data/local-fx.json`；zip 留一份，APK 更新重建运行时目录后由 `LocalArt.ensureInstalled()` 自动重装。
 
 不装也**不算故障**：上游内置的 node 服务把缺失的 `data/local-assets.json` 直接当空清单应答
 （`server/http/static.js`），客户端按既有回退渲染（3D 棋盘退回 2D 棋盘、战场退回金属地块）。
 
 跟进时注意：
 
-- **上游改了本地素材路径或清单名**（`public/assets/local/`、`data/local-assets.json`）→ 同步
-  `tools/fetch-local-art.mjs` 的条目清单与 `LocalArt.kt` 的 `MANIFEST` / `ART_PREFIX`。
+- **上游改了本地素材路径或清单名**（`public/assets/local/`、`data/local-assets.json`、`data/local-fx.json`）→ 同步
+  `tools/fetch-local-art.mjs` 的条目清单与 `LocalArt.kt` 的清单/路径常量。
 - **上游改了完整包文件名**（`Stronghold-Protocol-v<版本>.zip`）→ 同步 `fetch-local-art.mjs` 的 URL 推导。
-- 本机验证不需要完整包：`node tools/fetch-local-art.mjs ../Stronghold-Protocol out.zip` 即可（下载约 64 MB）。
+- 本机验证不需要完整包：`node tools/fetch-local-art.mjs ../Stronghold-Protocol out.zip` 即可（v0.3.1 下载约 157 MB）。
   设 `STRONGHOLD_LOCAL_ART_URL` 可指向别的 URL / 本机文件。

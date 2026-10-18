@@ -24,11 +24,14 @@ const root = resolve(argv[0]);
 const log = (m) => console.log(m);
 
 const load = (rel) => import(pathToFileURL(join(root, 'tools', 'assets', rel)).href);
-const [{ loadIndexes }, { fontJobs, buildFonts, FONTS }, { Downloader }] = await Promise.all(
-  ['cache.mjs', 'fonts.mjs', 'downloader.mjs'].map(load)
+const [{ loadIndexes }, { fontJobs, buildFonts, FONTS }, { Downloader }, { statsTemplateJobs }] = await Promise.all(
+  ['cache.mjs', 'fonts.mjs', 'downloader.mjs', 'stats-template.mjs'].map(load)
 );
 
 await loadIndexes(root, { log });
+const statsTemplate = await statsTemplateJobs(root, { log });
+const missingStats = statsTemplate.filter((job) => !job.urls.length).map((job) => job.name);
+if (missingStats.length) throw new Error(`统计页素材来源缺失: ${missingStats.join(', ')}`);
 
 const fontsDir = join(root, 'public', 'fonts');
 const downloader = new Downloader({

@@ -5,7 +5,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val strongholdSource = rootProject.file("../Stronghold-Protocol")
+val strongholdSource = rootProject.file(
+    (findProperty("stronghold.sourceDir") as String?)?.takeIf { it.isNotBlank() } ?: "../Stronghold-Protocol"
+)
 val strongholdNodeModules = strongholdSource.resolve("node_modules")
 val strongholdNodeLock = strongholdNodeModules.resolve(".package-lock.json")
 
@@ -25,7 +27,8 @@ val strongholdLocalArtUrl: String by lazy {
 }
 
 val strongholdRequiredFiles = listOf(
-    "data", "public", "server", "shared", "package.json", "node_modules/.package-lock.json"
+    "data", "public", "server", "shared", "packs", "schemas", "plugins/_template",
+    "package.json", "node_modules/.package-lock.json"
 ).map(strongholdSource::resolve)
 
 // npm 隐藏锁文件中标记 "dev": true 的包，路径相对 node_modules/（例如 "cliui/node_modules/string-width"）。
@@ -127,11 +130,13 @@ val packageStrongholdRuntime by tasks.registering(Zip::class) {
     }
 
     from(strongholdSource) { include("package.json") }
-    listOf("data", "public", "server", "shared").forEach { dir ->
+    listOf("data", "public", "server", "shared", "packs", "schemas", "plugins").forEach { dir ->
         from(strongholdSource.resolve(dir)) {
             into(dir)
             // 游戏素材不随 APK 分发：由连接页下载或从用户的资源包读取。
             if (dir == "public") exclude("assets/**")
+            // 只带上游模板；用户安装的插件不能从构建机进入 APK。
+            if (dir == "plugins") include("README.md", "AGENTS.md", "_template/**")
         }
     }
     from(strongholdNodeModules) {
@@ -174,7 +179,8 @@ val generateStrongholdAssetIndex by tasks.registering(Exec::class) {
             "docs/research/03-operators.json", "docs/research/05-enemies.json",
             "docs/research/05-maps.json", "docs/research/07-assets.json",
             ".cache/assets-ledger.json", ".cache/gamedata/excel/audio_data.json",
-            ".cache/ark-models/models_data.json",
+            ".cache/ark-models/models_data.json", ".cache/stats-template-41668e.css",
+            "public/assets/local/fx/index.json",
         ).map(strongholdSource::resolve)
     )
     inputs.files(fileTree(strongholdSource.resolve("tools/assets")))

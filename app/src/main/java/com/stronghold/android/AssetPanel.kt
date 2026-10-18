@@ -98,13 +98,19 @@ internal class AssetPanel(
         checkButton = actionButton { checkAction() }
         exportButton = actionButton { exportAction() }.apply { text = "导出资源包" }
         val buttons = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(downloadButton, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
-            for (button in listOf(importButton, checkButton, exportButton)) {
-                addView(button, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f).apply { leftMargin = activity.dp(8) })
+            orientation = LinearLayout.VERTICAL
+            listOf(listOf(downloadButton, importButton), listOf(checkButton, exportButton)).forEachIndexed { row, pair ->
+                val line = LinearLayout(activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(pair[0], LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+                    addView(pair[1], LinearLayout.LayoutParams(0, MATCH_PARENT, 1f).apply { leftMargin = activity.dp(8) })
+                }
+                addView(line, LinearLayout.LayoutParams(MATCH_PARENT, activity.dp(36)).apply {
+                    if (row > 0) topMargin = activity.dp(8)
+                })
             }
         }
-        root.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, activity.dp(36)).apply { topMargin = activity.dp(8) })
+        root.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = activity.dp(8) })
 
         artButton = actionButton { artAction() }.apply { text = "本地美术包" }
         root.addView(artButton, LinearLayout.LayoutParams(MATCH_PARENT, activity.dp(36)).apply { topMargin = activity.dp(8) })
@@ -482,7 +488,7 @@ internal class AssetPanel(
                 force = false
             }
             LocalArt.Phase.ABSENT -> {
-                message = "将从本项目的 release 下载本地美术包（$what，约 65 MB），解到本机运行时目录。\n\n${LocalArt.url()}"
+                message = "将从本项目的 release 下载本地美术包（$what，约 157 MB），解到本机运行时目录。\n\n${LocalArt.url()}"
                 positive = "下载"
                 force = false
             }

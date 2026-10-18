@@ -3,7 +3,7 @@ package com.stronghold.android
 import android.content.Context
 import org.json.JSONObject
 
-internal enum class AssetKind { PNG, MP3, ATLAS, SKEL, OTHER }
+internal enum class AssetKind { PNG, MP3, FONT, ATLAS, SKEL, OTHER }
 
 /**
  * 上游 data/assets.json 引用的一个 `/assets/<rel>` 文件。

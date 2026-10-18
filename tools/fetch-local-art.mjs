@@ -2,7 +2,7 @@
 // 从上游完整包的 Release zip 里，用 HTTP Range 只取出「本地客户端美术」（3D 棋盘 + 战场场景等），
 // 重新打包成一个小的美术包 zip 供 Android 端下载。零依赖：只用 Node 内置模块与全局 fetch。
 //
-// 上游完整包约 583 MB，里面是 local-extract 从官方客户端提取出来的本地素材；Android 端只要其中的
+// 上游 v0.3.1 完整包约 846 MB，里面是 local-extract 从官方客户端提取出来的本地素材；Android 端只要其中的
 // 棋盘 / 场景部分。整包下载再筛掉大部分字节是浪费，于是这里不落地整包：依次 Range 取末尾的 EOCD、
 // 一次取整个中央目录、再按条目取局部头与压缩字节，边取边重打包。
 //
@@ -12,7 +12,7 @@
 // Usage: node tools/fetch-local-art.mjs <upstreamRoot> <outFile> [--all]
 //   <upstreamRoot>  上游 clone 目录（读它的 package.json 的 version）
 //   <outFile>       输出 zip 路径（目录会被创建）
-//   --all           默认只收 public/assets/local/{scene,map,mesh}/ 与 data/local-assets.json，
+//   --all           默认只收 public/assets/local/{scene,map,mesh,fx}/ 与两个本地清单，
 //                   并据此过滤清单；加 --all 则 public/assets/local/ 全收、清单原样保留
 //   环境变量 STRONGHOLD_LOCAL_ART_URL 可覆盖源 URL（离线复现 / 换镜像时用）。
 //
@@ -20,16 +20,18 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const UPSTREAM_REPO = 'sganggs/Stronghold-Protocol';
-/** 默认选集：这三个目录下的全部条目，加上清单本身。 */
-const DEFAULT_DIRS = ['public/assets/local/scene/', 'public/assets/local/map/', 'public/assets/local/mesh/'];
+/** 默认选集：场景、棋盘和官方特效目录下的全部条目，加上清单本身。 */
+const DEFAULT_DIRS = ['public/assets/local/scene/', 'public/assets/local/map/', 'public/assets/local/mesh/', 'public/assets/local/fx/'];
 const ALL_DIR = 'public/assets/local/';
 /** 清单里 path 用的前缀（去掉了 public/）。 */
-const MANIFEST_DIRS = DEFAULT_DIRS.map((d) => `/${d.slice('public/'.length)}`);
+const MANIFEST_DIRS = DEFAULT_DIRS.filter((d) => !d.endsWith('/fx/')).map((d) => `/${d.slice('public/'.length)}`);
 const MANIFEST_PATH = 'data/local-assets.json';
+const FX_MANIFEST_PATH = 'data/local-fx.json';
 /** 上游 zip 内所有条目的顶层前缀。 */
 const ZIP_PREFIX = 'Stronghold-Protocol/';
 const TAIL_BYTES = 128 * 1024;
@@ -155,10 +157,55 @@ async function readEntry(url, entry) {
   const raw = entry.compSize
     ? (await rangeFetch(url, dataStart, dataStart + entry.compSize - 1, `data ${entry.name}`)).buf
     : Buffer.alloc(0);
+  return decodeEntry(entry, raw);
+}
+
+function decodeEntry(entry, raw) {
   const data = entry.method === 0 ? raw : entry.method === 8 ? inflateRawSync(raw) : null;
   if (!data) throw new Error(`${entry.name}: unsupported compression method ${entry.method}`);
   if (data.length !== entry.uncompSize) throw new Error(`${entry.name}: ${data.length} != ${entry.uncompSize} bytes`);
   return data;
+}
+
+/** 相邻的小条目合并成一次 Range 请求；v0.3.0 的特效包有数千文件，逐个取会产生过多请求。 */
+async function readEntries(url, allEntries, picked) {
+  const sorted = [...allEntries].sort((a, b) => a.localOffset - b.localOffset);
+  const ends = new Map(sorted.map((entry, i) => [entry, (sorted[i + 1]?.localOffset ?? Infinity) - 1]));
+  const groups = [];
+  const maxSpan = 8 * 1024 * 1024;
+  for (const entry of [...picked].sort((a, b) => a.localOffset - b.localOffset)) {
+    const end = ends.get(entry);
+    const prev = groups.at(-1);
+    if (end === Infinity || end - entry.localOffset + 1 > maxSpan) {
+      groups.push({ entries: [entry], single: true });
+    } else if (prev && !prev.single && entry.localOffset - prev.end <= 65536 && end - prev.start + 1 <= maxSpan) {
+      prev.entries.push(entry);
+      prev.end = end;
+    } else {
+      groups.push({ entries: [entry], start: entry.localOffset, end });
+    }
+  }
+  log(`合并为 ${groups.length} 个范围请求（${picked.length} 个条目）`);
+  let done = 0;
+  const batches = await mapLimit(groups, CONCURRENCY, async (group) => {
+    if (group.single) {
+      const entry = group.entries[0];
+      return [{ name: relOf(entry.name), data: await readEntry(url, entry) }];
+    }
+    const block = (await rangeFetch(url, group.start, group.end, `entries ${group.entries[0].name}`)).buf;
+    const files = group.entries.map((entry) => {
+      const at = entry.localOffset - group.start;
+      if (block.readUInt32LE(at) !== 0x04034b50) throw new Error(`bad local header for ${entry.name}`);
+      const dataStart = at + 30 + block.readUInt16LE(at + 26) + block.readUInt16LE(at + 28);
+      const raw = block.subarray(dataStart, dataStart + entry.compSize);
+      if (raw.length !== entry.compSize) throw new Error(`short compressed data for ${entry.name}`);
+      return { name: relOf(entry.name), data: decodeEntry(entry, raw) };
+    });
+    done += files.length;
+    if (done % 100 < files.length) log(`  …${done}/${picked.length}`);
+    return files;
+  });
+  return batches.flat();
 }
 
 async function mapLimit(items, limit, fn) {
@@ -177,13 +224,13 @@ async function mapLimit(items, limit, fn) {
 
 const relOf = (name) => (name.startsWith(ZIP_PREFIX) ? name.slice(ZIP_PREFIX.length) : name);
 
-/** 默认只收三个目录 + 清单；--all 收整个 public/assets/local/ + 清单。目录条目（名字以 / 结尾）不收。 */
+/** 默认只收场景与特效目录及两个清单；--all 收整个 public/assets/local/。目录条目不收。 */
 function selectEntries(entries, scope) {
   const dirs = scope === 'all' ? [ALL_DIR] : DEFAULT_DIRS;
   return entries.filter((e) => {
     if (e.name.endsWith('/')) return false;
     const rel = relOf(e.name);
-    return rel === MANIFEST_PATH || dirs.some((d) => rel.startsWith(d));
+    return rel === MANIFEST_PATH || rel === FX_MANIFEST_PATH || dirs.some((d) => rel.startsWith(d));
   });
 }
 
@@ -237,7 +284,7 @@ function crc32(buf) {
 const UTF8_FLAG = 0x800;
 
 /** files: [{name, data:Buffer}]，按 name 升序（调用方排好）。返回 Buffer。 */
-function buildZip(files) {
+export function buildZip(files) {
   if (files.length >= 0xffff) throw new Error(`too many entries for a non-ZIP64 archive: ${files.length}`);
   const parts = [];
   const head = [];
@@ -304,7 +351,7 @@ async function main(argv) {
     usage();
     process.exit(2);
   }
-  const scope = flags.includes('--all') ? 'all' : 'board+scene';
+  const scope = flags.includes('--all') ? 'all' : 'board+scene+fx';
   const root = resolve(positional[0]);
   const out = resolve(positional[1]);
 
@@ -314,7 +361,7 @@ async function main(argv) {
     process.env.STRONGHOLD_LOCAL_ART_URL ||
     `https://github.com/${UPSTREAM_REPO}/releases/download/v${version}/Stronghold-Protocol-v${version}.zip`;
   log(`源：${url}`);
-  log(`范围：${scope}${scope === 'all' ? '（public/assets/local/ 全收）' : '（scene/ map/ mesh/）'}`);
+  log(`范围：${scope}${scope === 'all' ? '（public/assets/local/ 全收）' : '（scene/ map/ mesh/ fx/）'}`);
 
   const probe = await rangeFetch(url, 0, 0, 'probe');
   const total = probe.total;
@@ -324,20 +371,32 @@ async function main(argv) {
   const picked = selectEntries(entries, scope);
   if (!picked.length) throw new Error('no matching entries in the source zip');
   log(`命中 ${picked.length} 个条目，并发 ${CONCURRENCY} 取回…`);
-
-  let done = 0;
-  const fetched = await mapLimit(picked, CONCURRENCY, async (e) => {
-    const data = await readEntry(url, e);
-    if (++done % 100 === 0) log(`  …${done}/${picked.length}`);
-    return { name: relOf(e.name), data };
-  });
+  const fetched = await readEntries(url, entries, picked);
   const manifestRaw = fetched.find((f) => f.name === MANIFEST_PATH);
   if (!manifestRaw) throw new Error(`${MANIFEST_PATH} not found in the source zip`);
+  const fxManifestRaw = fetched.find((f) => f.name === FX_MANIFEST_PATH);
+  if (!fxManifestRaw) throw new Error(`${FX_MANIFEST_PATH} not found in the source zip`);
 
   const filtered = filterManifest(JSON.parse(manifestRaw.data.toString('utf8')), scope);
   manifestRaw.data = Buffer.from(JSON.stringify(filtered));
+  const fxManifest = JSON.parse(fxManifestRaw.data.toString('utf8'));
+  if (!fxManifest.groups || !fxManifest.count) throw new Error(`${FX_MANIFEST_PATH} has no effects`);
 
   const payload = [...fetched].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const included = new Set(payload.map((file) => file.name));
+  for (const [manifest, doc] of [[MANIFEST_PATH, filtered], [FX_MANIFEST_PATH, fxManifest]]) {
+    let count = 0;
+    for (const group of Object.values(doc.groups)) {
+      for (const entry of Object.values(group)) {
+        const path = entry?.path;
+        if (typeof path !== 'string' || !path.startsWith('/assets/local/') || !included.has(`public${path}`)) {
+          throw new Error(`${manifest} references an absent file: ${path}`);
+        }
+        count++;
+      }
+    }
+    if (count !== doc.count) throw new Error(`${manifest} count ${doc.count} != ${count}`);
+  }
   const meta = {
     version,
     scope,
@@ -358,7 +417,9 @@ async function main(argv) {
   log(`源：${url}`);
 }
 
-main(process.argv.slice(2)).catch((e) => {
-  console.error(`[local-art] FAILED: ${e?.message || e}`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main(process.argv.slice(2)).catch((e) => {
+    console.error(`[local-art] FAILED: ${e?.message || e}`);
+    process.exit(1);
+  });
+}

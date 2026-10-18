@@ -33,6 +33,7 @@ internal class ConnectionScreen(
     private val history: ConnectionHistory,
     private val assets: AssetStore,
     private val onLocal: () -> Unit,
+    private val onStudio: () -> Unit,
     private val onExternal: (serverUrl: String) -> Unit,
     onPickArchive: () -> Unit,
 ) {
@@ -71,9 +72,12 @@ internal class ConnectionScreen(
 
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(40), dp(28), dp(40), dp(28))
-            addView(leftColumn(), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            val localScroll = ScrollView(activity).apply {
+                isFillViewport = true
+                addView(leftColumn(), FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            }
+            addView(localScroll, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
             addView(
                 remotePanel(),
                 LinearLayout.LayoutParams(0, MATCH_PARENT, 1f).apply { leftMargin = dp(32) }
@@ -132,6 +136,16 @@ internal class ConnectionScreen(
         addView(localButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(56)).apply { topMargin = dp(24) })
 
         addView(activity.styledText("使用 APK 内置 Stronghold 服务", 12f, Palette.TEXT_DIM), topMargin(8))
+
+        val studioButton = Button(activity).apply {
+            background = activity.secondaryButtonBackground()
+            flat()
+            text = "插件工作台"
+            textSize = 14f
+            setTextColor(Palette.TEXT_HI)
+            setOnClickListener { onStudio() }
+        }
+        addView(studioButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(40)).apply { topMargin = dp(10) })
 
         addView(
             assetPanel.createView(),
